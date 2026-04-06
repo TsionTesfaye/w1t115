@@ -1,0 +1,811 @@
+# TalentBridge Integration Simulator API Spec
+
+This document contains the OpenAPI 3.0.3 specification for the Integration Simulator.
+
+```yaml
+openapi: 3.0.3
+info:
+  title: TalentBridge Integration Simulator API
+  version: 1.0.0
+  description: |
+    OpenAPI spec for the in-app Integration Simulator implemented by the Service Worker.
+
+    Base behavior:
+    - All requests are intercepted under `/api/simulate/*`.
+    - HMAC signature verification is required (`X-Signature`).
+    - Rate limit: 60 requests per minute per integration key.
+    - Optional idempotency via `X-Idempotency-Key` (24-hour TTL).
+    - Responses include simulator headers (`X-Simulated`, `X-Simulator-Version`).
+
+servers:
+  - url: /api/simulate
+    description: Service Worker simulator base path
+
+tags:
+  - name: System
+  - name: Jobs
+  - name: Applications
+  - name: Candidates
+  - name: Webhooks
+
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Simulator health check
+      description: Returns simulator status metadata.
+      security:
+        - IntegrationKeyAuth: []
+          HmacSignatureAuth: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationIdHeader'
+        - $ref: '#/components/parameters/SecretVersionHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      responses:
+        '200':
+          description: Health status
+          headers:
+            X-Simulated:
+              $ref: '#/components/headers/XSimulated'
+            X-Simulator-Version:
+              $ref: '#/components/headers/XSimulatorVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /jobs:
+    get:
+      tags: [Jobs]
+      summary: List jobs
+      description: |
+        Returns paginated jobs. Optionally filter by `status`.
+        If `X-Organization-Id` is provided, results are organization-scoped.
+      security:
+        - IntegrationKeyAuth: []
+          HmacSignatureAuth: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationIdHeader'
+        - $ref: '#/components/parameters/SecretVersionHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - in: query
+          name: status
+          required: false
+          schema:
+            $ref: '#/components/schemas/JobStatus'
+        - in: query
+          name: page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Paginated list of jobs
+          headers:
+            X-Simulated:
+              $ref: '#/components/headers/XSimulated'
+            X-Simulator-Version:
+              $ref: '#/components/headers/XSimulatorVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedJobsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      tags: [Jobs]
+      summary: Create job (not supported via simulator direct write)
+      description: |
+        The simulator blocks direct writes and returns 501.
+        Core writes must go through the TalentBridge service layer.
+      security:
+        - IntegrationKeyAuth: []
+          HmacSignatureAuth: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationIdHeader'
+        - $ref: '#/components/parameters/SecretVersionHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '501':
+          $ref: '#/components/responses/WriteNotSupported'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /jobs/{jobId}:
+    get:
+      tags: [Jobs]
+      summary: Get job by ID
+      security:
+        - IntegrationKeyAuth: []
+          HmacSignatureAuth: []
+      parameters:
+        - in: path
+          name: jobId
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/OrganizationIdHeader'
+        - $ref: '#/components/parameters/SecretVersionHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      responses:
+        '200':
+          description: Job record
+          headers:
+            X-Simulated:
+              $ref: '#/components/headers/XSimulated'
+            X-Simulator-Version:
+              $ref: '#/components/headers/XSimulatorVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Job'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /applications:
+    get:
+      tags: [Applications]
+      summary: List applications
+      description: |
+        Returns paginated applications.
+        Optional filters: `status`, `stage`.
+      security:
+        - IntegrationKeyAuth: []
+          HmacSignatureAuth: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationIdHeader'
+        - $ref: '#/components/parameters/SecretVersionHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - in: query
+          name: status
+          required: false
+          schema:
+            $ref: '#/components/schemas/ApplicationStatus'
+        - in: query
+          name: stage
+          required: false
+          schema:
+            $ref: '#/components/schemas/ApplicationStage'
+        - in: query
+          name: page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Paginated list of applications
+          headers:
+            X-Simulated:
+              $ref: '#/components/headers/XSimulated'
+            X-Simulator-Version:
+              $ref: '#/components/headers/XSimulatorVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedApplicationsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      tags: [Applications]
+      summary: Create application (not supported via simulator direct write)
+      description: |
+        The simulator blocks direct writes and returns 501.
+        Core writes must go through the TalentBridge service layer.
+      security:
+        - IntegrationKeyAuth: []
+          HmacSignatureAuth: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationIdHeader'
+        - $ref: '#/components/parameters/SecretVersionHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '501':
+          $ref: '#/components/responses/WriteNotSupported'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /applications/{applicationId}:
+    get:
+      tags: [Applications]
+      summary: Get application by ID
+      security:
+        - IntegrationKeyAuth: []
+          HmacSignatureAuth: []
+      parameters:
+        - in: path
+          name: applicationId
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/OrganizationIdHeader'
+        - $ref: '#/components/parameters/SecretVersionHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      responses:
+        '200':
+          description: Application record
+          headers:
+            X-Simulated:
+              $ref: '#/components/headers/XSimulated'
+            X-Simulator-Version:
+              $ref: '#/components/headers/XSimulatorVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Application'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /candidates:
+    get:
+      tags: [Candidates]
+      summary: List candidates
+      description: |
+        Returns paginated users with the `candidate` role.
+        Sensitive credential fields are stripped.
+      security:
+        - IntegrationKeyAuth: []
+          HmacSignatureAuth: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationIdHeader'
+        - $ref: '#/components/parameters/SecretVersionHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+        - in: query
+          name: page
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - in: query
+          name: limit
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: Paginated list of candidate users
+          headers:
+            X-Simulated:
+              $ref: '#/components/headers/XSimulated'
+            X-Simulator-Version:
+              $ref: '#/components/headers/XSimulatorVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCandidatesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /candidates/{candidateId}:
+    get:
+      tags: [Candidates]
+      summary: Get candidate by ID
+      security:
+        - IntegrationKeyAuth: []
+          HmacSignatureAuth: []
+      parameters:
+        - in: path
+          name: candidateId
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/OrganizationIdHeader'
+        - $ref: '#/components/parameters/SecretVersionHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      responses:
+        '200':
+          description: Candidate user record (sanitized)
+          headers:
+            X-Simulated:
+              $ref: '#/components/headers/XSimulated'
+            X-Simulator-Version:
+              $ref: '#/components/headers/XSimulatorVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CandidateUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /webhooks/dispatch:
+    post:
+      tags: [Webhooks]
+      summary: Simulate webhook dispatch delivery
+      description: |
+        Accepts payloads and returns delivery acknowledgement.
+        Used internally by webhook retry processing.
+      security:
+        - IntegrationKeyAuth: []
+          HmacSignatureAuth: []
+      parameters:
+        - $ref: '#/components/parameters/OrganizationIdHeader'
+        - $ref: '#/components/parameters/SecretVersionHeader'
+        - $ref: '#/components/parameters/IdempotencyKeyHeader'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+          text/plain:
+            schema:
+              type: string
+      responses:
+        '200':
+          description: Dispatch accepted
+          headers:
+            X-Simulated:
+              $ref: '#/components/headers/XSimulated'
+            X-Simulator-Version:
+              $ref: '#/components/headers/XSimulatorVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookDispatchResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+components:
+  securitySchemes:
+    IntegrationKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Integration-Key
+      description: Integration key used to bucket rate limits and secret lookup.
+    HmacSignatureAuth:
+      type: apiKey
+      in: header
+      name: X-Signature
+      description: |
+        HMAC-SHA256 signature (hex) of the exact request body.
+        Verified against active integration secrets.
+
+  headers:
+    XSimulated:
+      description: Always `true` for simulator responses.
+      schema:
+        type: string
+        example: 'true'
+    XSimulatorVersion:
+      description: Simulator response contract version.
+      schema:
+        type: string
+        example: '1'
+
+  parameters:
+    OrganizationIdHeader:
+      in: header
+      name: X-Organization-Id
+      required: false
+      schema:
+        type: string
+      description: Optional organization scope filter.
+    SecretVersionHeader:
+      in: header
+      name: X-Secret-Version
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+      description: Optional active secret version hint for HMAC verification.
+    IdempotencyKeyHeader:
+      in: header
+      name: X-Idempotency-Key
+      required: false
+      schema:
+        type: string
+      description: |
+        Optional idempotency key. Cached responses may be replayed for up to 24 hours.
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid HMAC signature.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          examples:
+            missingSignature:
+              value:
+                error: X-Signature header is required
+            invalidSignature:
+              value:
+                error: Invalid HMAC signature
+    Forbidden:
+      description: Resource exists but cannot be accessed in current org scope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Forbidden
+    NotFound:
+      description: Resource was not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Resource not found
+            id: abc123
+    MethodNotAllowed:
+      description: HTTP method not allowed for the endpoint.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Method not allowed
+    RateLimited:
+      description: Request exceeded 60 requests/minute for the integration key.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RateLimitErrorResponse'
+          example:
+            error: Rate limit exceeded
+            limitPerMinute: 60
+    ServiceUnavailable:
+      description: IndexedDB unavailable to the Service Worker.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Database unavailable
+            detail: IndexedDB open failed
+    WriteNotSupported:
+      description: Direct write operations are intentionally blocked in simulator endpoints.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: Write operations must use the TalentBridge service layer
+
+  schemas:
+    BaseEntity:
+      type: object
+      required: [id, version, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        version:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    JobStatus:
+      type: string
+      enum: [draft, active, closed, archived]
+
+    ApplicationStage:
+      type: string
+      enum: [draft, submitted, under_review, interview_scheduled, interview_completed, offer_extended]
+
+    ApplicationStatus:
+      type: string
+      enum: [active, accepted, rejected, withdrawn, expired, deleted, archived]
+
+    UserRole:
+      type: string
+      enum: [candidate, employer, hr_coordinator, interviewer, administrator]
+
+    Job:
+      allOf:
+        - $ref: '#/components/schemas/BaseEntity'
+        - type: object
+          required: [organizationId, ownerUserId, title, description, tags, topics, status]
+          properties:
+            organizationId:
+              type: string
+            ownerUserId:
+              type: string
+            departmentId:
+              type: string
+              nullable: true
+            title:
+              type: string
+            description:
+              type: string
+            tags:
+              type: array
+              items:
+                type: string
+            topics:
+              type: array
+              items:
+                type: string
+            status:
+              $ref: '#/components/schemas/JobStatus'
+
+    Application:
+      allOf:
+        - $ref: '#/components/schemas/BaseEntity'
+        - type: object
+          required: [jobId, candidateId, organizationId, stage, status]
+          properties:
+            jobId:
+              type: string
+            candidateId:
+              type: string
+            organizationId:
+              type: string
+            stage:
+              $ref: '#/components/schemas/ApplicationStage'
+            status:
+              $ref: '#/components/schemas/ApplicationStatus'
+            offerExpiresAt:
+              type: string
+              format: date-time
+              nullable: true
+            submittedAt:
+              type: string
+              format: date-time
+              nullable: true
+
+    CandidateUser:
+      allOf:
+        - $ref: '#/components/schemas/BaseEntity'
+        - type: object
+          required:
+            - username
+            - roles
+            - organizationId
+            - departmentId
+            - displayName
+            - failedAttempts
+            - captchaRequiredAfterFailures
+          properties:
+            username:
+              type: string
+            roles:
+              type: array
+              items:
+                $ref: '#/components/schemas/UserRole'
+            organizationId:
+              type: string
+            departmentId:
+              type: string
+            displayName:
+              type: string
+            failedAttempts:
+              type: integer
+              minimum: 0
+            captchaRequiredAfterFailures:
+              type: integer
+              minimum: 0
+            lockoutUntil:
+              type: string
+              format: date-time
+              nullable: true
+            lastCommentAt:
+              type: string
+              format: date-time
+              nullable: true
+            deactivatedAt:
+              type: string
+              format: date-time
+              nullable: true
+          additionalProperties: true
+
+    HealthResponse:
+      type: object
+      required: [status, simulator, timestamp]
+      properties:
+        status:
+          type: string
+          example: ok
+        simulator:
+          type: string
+          example: TalentBridge
+        timestamp:
+          type: string
+          format: date-time
+
+    WebhookDispatchResponse:
+      type: object
+      required: [accepted, dispatchedAt, payloadBytes]
+      properties:
+        accepted:
+          type: boolean
+          example: true
+        dispatchedAt:
+          type: string
+          format: date-time
+        payloadBytes:
+          type: integer
+          minimum: 0
+
+    PaginatedJobsResponse:
+      type: object
+      required: [data, total, page, limit]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Job'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        limit:
+          type: integer
+          minimum: 1
+
+    PaginatedApplicationsResponse:
+      type: object
+      required: [data, total, page, limit]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Application'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        limit:
+          type: integer
+          minimum: 1
+
+    PaginatedCandidatesResponse:
+      type: object
+      required: [data, total, page, limit]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/CandidateUser'
+        total:
+          type: integer
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        limit:
+          type: integer
+          minimum: 1
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        detail:
+          type: string
+        path:
+          type: string
+        id:
+          type: string
+
+    RateLimitErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            limitPerMinute:
+              type: integer
+              minimum: 1
+
+```
