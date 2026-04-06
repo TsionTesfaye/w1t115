@@ -6,5 +6,4 @@
  * found in the LICENSE file at https://angular.dev/license
  */
 export * from './api';
-export * from './format-extended-error';
 export * from './extended_template_checker';
