@@ -7,6 +7,11 @@
 # The test runner uses Vitest in single-thread mode to avoid Angular TestBed
 # concurrency issues (multiple initTestEnvironment calls).
 
+# If invoked via `sh run_tests.sh` the shebang is ignored — re-exec with bash.
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,7 +24,6 @@ for arg in "$@"; do
   case $arg in
     --watch)        WATCH=true ;;
     --coverage)     COVERAGE=true ;;
-    --suite)        shift; SUITE="${1:-all}" ;;
     --suite=*)      SUITE="${arg#*=}" ;;
   esac
 done
@@ -33,6 +37,15 @@ echo ""
 
 cd "$REPO_ROOT"
 
+# ── Install dependencies ───────────────────────────────────────────────────────
+# node_modules are not committed; install them if absent (CI / clean checkout).
+if [ ! -d node_modules ]; then
+  echo "--- Installing dependencies ---"
+  npm ci
+  echo "--- Dependencies installed ---"
+  echo ""
+fi
+
 # ── Build gate ────────────────────────────────────────────────────────────────
 echo "--- Build validation ---"
 if ! npm run build --silent 2>&1; then
@@ -44,16 +57,6 @@ if ! npm run build --silent 2>&1; then
 fi
 echo "--- Build passed ---"
 echo ""
-
-# Build the vitest base command
-VITEST_BASE=(npx ng test)
-if [ "$WATCH" = true ]; then
-  VITEST_BASE=(npx vitest)
-  [ "$COVERAGE" = true ] && VITEST_BASE+=(--coverage)
-else
-  VITEST_BASE=(npx vitest run)
-  [ "$COVERAGE" = true ] && VITEST_BASE+=(--coverage)
-fi
 
 run_suite() {
   local name="$1"
@@ -80,10 +83,18 @@ case "$SUITE" in
     run_suite "E2E"     "e2e_tests"
     ;;
   all|*)
-    echo "--- Running all test suites (single-thread mode) ---"
-    npx vitest run
-    echo ""
-    echo "--- All test suites complete ---"
+    if [ "$WATCH" = true ]; then
+      EXTRA_ARGS=""
+      [ "$COVERAGE" = true ] && EXTRA_ARGS="--coverage"
+      npx vitest $EXTRA_ARGS
+    else
+      EXTRA_ARGS=""
+      [ "$COVERAGE" = true ] && EXTRA_ARGS="--coverage"
+      echo "--- Running all test suites (single-thread mode) ---"
+      npx vitest run $EXTRA_ARGS
+      echo ""
+      echo "--- All test suites complete ---"
+    fi
     ;;
 esac
 
