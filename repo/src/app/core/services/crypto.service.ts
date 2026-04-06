@@ -91,7 +91,7 @@ export class CryptoService {
     const key = await crypto.subtle.importKey(
       'raw', encoder.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify'],
     );
-    let sigBytes: Uint8Array<ArrayBuffer>;
+    let sigBytes: Uint8Array;
     try {
       sigBytes = this.hexToBuffer(signature);
     } catch {
@@ -112,7 +112,7 @@ export class CryptoService {
     return Array.from(buffer).map(b => b.toString(16).padStart(2, '0')).join('');
   }
 
-  hexToBuffer(hex: string): Uint8Array<ArrayBuffer> {
+  hexToBuffer(hex: string): Uint8Array {
     if (hex.length % 2 !== 0) throw new RangeError(`Invalid hex string length: ${hex.length}`);
     const buf = new ArrayBuffer(hex.length / 2);
     const bytes = new Uint8Array(buf);

@@ -12,8 +12,40 @@
  * already been called". Individual spec files only need resetTestingModule()
  * in afterEach() to isolate tests from each other.
  */
-import '@angular/compiler';
-import { TestBed } from '@angular/core/testing';
-import { BrowserTestingModule, platformBrowserTesting } from '@angular/platform-browser/testing';
+import 'zone.js';
+import 'zone.js/testing';
+import { webcrypto } from 'node:crypto';
 
-TestBed.initTestEnvironment(BrowserTestingModule, platformBrowserTesting());
+// Node 18 + jsdom: crypto.subtle is not exposed in the jsdom global by default.
+// Wire in Node's built-in Web Crypto so all crypto.subtle calls work in tests.
+if (typeof globalThis.crypto === 'undefined' || typeof globalThis.crypto.subtle === 'undefined') {
+  Object.defineProperty(globalThis, 'crypto', {
+    value: webcrypto,
+    writable: false,
+    configurable: true,
+  });
+}
+import { getTestBed } from '@angular/core/testing';
+import { BrowserDynamicTestingModule, platformBrowserDynamicTesting } from '@angular/platform-browser-dynamic/testing';
+
+getTestBed().initTestEnvironment(
+  BrowserDynamicTestingModule,
+  platformBrowserDynamicTesting(),
+);
+
+// jsdom does not implement URL.createObjectURL / revokeObjectURL.
+// Stub them so tests can use vi.spyOn() on these methods without throwing.
+if (typeof URL.createObjectURL === 'undefined') {
+  Object.defineProperty(URL, 'createObjectURL', {
+    value: () => 'blob:stub',
+    writable: true,
+    configurable: true,
+  });
+}
+if (typeof URL.revokeObjectURL === 'undefined') {
+  Object.defineProperty(URL, 'revokeObjectURL', {
+    value: () => {},
+    writable: true,
+    configurable: true,
+  });
+}

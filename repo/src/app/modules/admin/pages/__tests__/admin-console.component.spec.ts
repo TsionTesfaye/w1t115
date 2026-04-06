@@ -10,6 +10,7 @@ import { User } from '../../../../core/models';
 import { ModerationService } from '../../../../core/services/moderation.service';
 
 afterEach(() => {
+  vi.restoreAllMocks();
   TestBed.resetTestingModule();
 });
 
