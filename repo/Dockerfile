@@ -16,5 +16,7 @@ COPY . .
 
 EXPOSE 4200
 
-# Start dev server bound to all interfaces so Docker port mapping works
-CMD ["npx", "ng", "serve", "--host", "0.0.0.0"]
+# Default: run the full test suite (build gate + vitest).
+# To run the dev server instead:
+#   docker run --rm -p 4200:4200 <image> npx ng serve --host 0.0.0.0
+CMD ["bash", "run_tests.sh"]
