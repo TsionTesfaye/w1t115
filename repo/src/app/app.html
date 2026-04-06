@@ -1,0 +1,8 @@
+@if (!session.initialized()) {
+  <div class="app-startup" role="status" aria-live="polite" aria-label="Loading TalentBridge">
+    <div class="startup-spinner" aria-hidden="true"></div>
+    <p>Loading TalentBridge…</p>
+  </div>
+} @else {
+  <app-shell />
+}

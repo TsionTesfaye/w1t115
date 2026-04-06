@@ -1,0 +1,9 @@
+services:
+  app:
+    build: .
+    ports:
+      - "4200:4200"
+    # run_tests.sh exits non-zero on failure, stopping the container before serve
+    command: sh -c "./run_tests.sh && npm run dev"
+    environment:
+      - NODE_ENV=development
