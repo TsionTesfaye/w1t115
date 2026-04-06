@@ -41,7 +41,7 @@ cd "$REPO_ROOT"
 # node_modules are not committed; install them if absent (CI / clean checkout).
 if [ ! -d node_modules ]; then
   echo "--- Installing dependencies ---"
-  npm ci
+  npm install
   echo "--- Dependencies installed ---"
   echo ""
 fi

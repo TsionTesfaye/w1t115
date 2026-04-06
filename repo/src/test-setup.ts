@@ -33,6 +33,12 @@ getTestBed().initTestEnvironment(
   platformBrowserDynamicTesting(),
 );
 
+// jsdom does not implement HTMLCanvasElement.getContext — stub it to prevent
+// "Not implemented" errors in stderr that can confuse CI log scanners.
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = () => null as any;
+}
+
 // jsdom does not implement URL.createObjectURL / revokeObjectURL.
 // Stub them so tests can use vi.spyOn() on these methods without throwing.
 if (typeof URL.createObjectURL === 'undefined') {

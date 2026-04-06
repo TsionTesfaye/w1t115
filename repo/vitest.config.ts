@@ -22,5 +22,10 @@ export default defineConfig({
     ],
     setupFiles: ['src/test-setup.ts'],
     singleThread: true,
+    // Suppress jsdom "Not implemented:" warnings (canvas, navigation, etc.).
+    // These are expected jsdom limitations, not real test failures.
+    onConsoleLog(log) {
+      if (log.includes('Not implemented:')) return false;
+    },
   },
 });
