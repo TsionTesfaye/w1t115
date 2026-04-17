@@ -200,6 +200,131 @@ describe('roleGuard — session rejection paths', () => {
   });
 });
 
+// ── Route access matrix ───────────────────────────────────────────────────────
+
+describe('Route access matrix', () => {
+  /**
+   * Tests each role against key routes using real authGuard and roleGuard.
+   * Route roles are sourced from ROUTE_ACCESS (the single source of truth).
+   *
+   * Pattern mirrors existing guard tests: TestBed.runInInjectionContext with
+   * a SessionService stub carrying the role under test.
+   */
+
+  const ROUTE_ROLES: Record<string, UserRole[]> = {
+    'application-packet': [UserRole.Candidate],
+    'admin': [UserRole.Administrator],
+    'jobs': [UserRole.Candidate, UserRole.Employer, UserRole.HRCoordinator, UserRole.Administrator],
+    'content': [UserRole.Employer, UserRole.HRCoordinator, UserRole.Administrator],
+  };
+
+  function setupGuardContext(activeRole: UserRole) {
+    TestBed.configureTestingModule({ providers: [provideRouter([])] });
+    const mockSession = makeMockSession({ authenticated: true, activeRole });
+    TestBed.overrideProvider(SessionService, { useValue: mockSession });
+  }
+
+  // /application-packet — Candidate only
+  describe('/application-packet', () => {
+    const routeRoles = ROUTE_ROLES['application-packet'];
+
+    it('Candidate is allowed', () => {
+      setupGuardContext(UserRole.Candidate);
+      const route = makeRoute({ roles: routeRoles });
+      const result = TestBed.runInInjectionContext(() => roleGuard(route, fakeState));
+      expect(result).toBe(true);
+      TestBed.resetTestingModule();
+    });
+
+    for (const denied of [UserRole.Employer, UserRole.HRCoordinator, UserRole.Interviewer, UserRole.Administrator]) {
+      it(`${denied} is denied`, () => {
+        setupGuardContext(denied);
+        const route = makeRoute({ roles: routeRoles });
+        const result = TestBed.runInInjectionContext(() => roleGuard(route, fakeState));
+        expect(result).toBeInstanceOf(UrlTree);
+        const url = TestBed.inject(Router).serializeUrl(result as UrlTree);
+        expect(url).toBe('/dashboard');
+        TestBed.resetTestingModule();
+      });
+    }
+  });
+
+  // /admin — Administrator only
+  describe('/admin', () => {
+    const routeRoles = ROUTE_ROLES['admin'];
+
+    it('Administrator is allowed', () => {
+      setupGuardContext(UserRole.Administrator);
+      const route = makeRoute({ roles: routeRoles });
+      const result = TestBed.runInInjectionContext(() => roleGuard(route, fakeState));
+      expect(result).toBe(true);
+      TestBed.resetTestingModule();
+    });
+
+    for (const denied of [UserRole.Candidate, UserRole.Employer, UserRole.HRCoordinator, UserRole.Interviewer]) {
+      it(`${denied} is denied`, () => {
+        setupGuardContext(denied);
+        const route = makeRoute({ roles: routeRoles });
+        const result = TestBed.runInInjectionContext(() => roleGuard(route, fakeState));
+        expect(result).toBeInstanceOf(UrlTree);
+        TestBed.resetTestingModule();
+      });
+    }
+  });
+
+  // /jobs — Candidate, Employer, HRCoordinator, Administrator allowed; Interviewer denied
+  describe('/jobs', () => {
+    const routeRoles = ROUTE_ROLES['jobs'];
+
+    for (const allowed of [UserRole.Candidate, UserRole.Employer, UserRole.HRCoordinator, UserRole.Administrator]) {
+      it(`${allowed} is allowed`, () => {
+        setupGuardContext(allowed);
+        const route = makeRoute({ roles: routeRoles });
+        const result = TestBed.runInInjectionContext(() => roleGuard(route, fakeState));
+        expect(result).toBe(true);
+        TestBed.resetTestingModule();
+      });
+    }
+
+    it('Interviewer is denied', () => {
+      setupGuardContext(UserRole.Interviewer);
+      const route = makeRoute({ roles: routeRoles });
+      const result = TestBed.runInInjectionContext(() => roleGuard(route, fakeState));
+      expect(result).toBeInstanceOf(UrlTree);
+      const url = TestBed.inject(Router).serializeUrl(result as UrlTree);
+      expect(url).toBe('/dashboard');
+      TestBed.resetTestingModule();
+    });
+  });
+
+  // /content — Employer, HRCoordinator, Administrator allowed; Candidate denied
+  describe('/content', () => {
+    const routeRoles = ROUTE_ROLES['content'];
+
+    for (const allowed of [UserRole.Employer, UserRole.HRCoordinator, UserRole.Administrator]) {
+      it(`${allowed} is allowed`, () => {
+        setupGuardContext(allowed);
+        const route = makeRoute({ roles: routeRoles });
+        const result = TestBed.runInInjectionContext(() => roleGuard(route, fakeState));
+        expect(result).toBe(true);
+        TestBed.resetTestingModule();
+      });
+    }
+
+    for (const denied of [UserRole.Candidate, UserRole.Interviewer]) {
+      it(`${denied} is denied`, () => {
+        setupGuardContext(denied);
+        const route = makeRoute({ roles: routeRoles });
+        const result = TestBed.runInInjectionContext(() => roleGuard(route, fakeState));
+        expect(result).toBeInstanceOf(UrlTree);
+        const url = TestBed.inject(Router).serializeUrl(result as UrlTree);
+        expect(url).toBe('/dashboard');
+        TestBed.resetTestingModule();
+      });
+    }
+  });
+});
+
 // ── Route fallback configuration ──────────────────────────────────────────────
 
 describe('route fallback configuration', () => {

@@ -1,140 +1,193 @@
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+/**
+ * NotificationCenterComponent tests — real NotificationService and DigestService
+ * backed by in-memory repos from helpers.ts.
+ *
+ * Boundary stubs kept:
+ *  - SessionService → plain stub (no crypto/IDB)
+ */
+
+import { describe, it, expect, afterEach } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal, computed } from '@angular/core';
+
 import { NotificationCenterComponent } from '../notification-center.component';
 import { SessionService } from '../../../../core/services/session.service';
 import { NotificationService } from '../../../../core/services/notification.service';
 import { DigestService } from '../../../../core/services/digest.service';
-import { UserRole, NotificationEventType } from '../../../../core/enums';
+import { DNDService } from '../../../../core/services/dnd.service';
+
+import { UserRole, NotificationDeliveryMode } from '../../../../core/enums';
 import { Notification, NotificationPreference } from '../../../../core/models';
+import { now } from '../../../../core/utils/id';
+
+import {
+  FakeNotificationRepo, FakeNotificationPreferenceRepo,
+  FakeDelayedDeliveryRepo, FakeDigestRepo,
+  fakeAudit, makeNotification,
+} from '../../../../core/services/__tests__/helpers';
 
 afterEach(() => {
   TestBed.resetTestingModule();
 });
 
-function makeSessionMock() {
+// ── Session stub ──────────────────────────────────────────────────────────────
+
+function makeSessionStub(userId = 'user1', orgId = 'org1') {
   return {
     activeRole: signal(UserRole.Candidate),
     isAuthenticated: computed(() => true),
     initialized: signal(true),
     currentUser: signal({ displayName: 'Test User' }),
-    organizationId: computed(() => 'org1'),
-    userId: computed(() => 'user1'),
+    organizationId: computed(() => orgId),
+    userId: computed(() => userId),
     userRoles: computed(() => [UserRole.Candidate]),
     requireAuth: () => ({
-      userId: 'user1',
-      organizationId: 'org1',
-      roles: [UserRole.Candidate],
-      activeRole: UserRole.Candidate,
+      userId, organizationId: orgId,
+      roles: [UserRole.Candidate], activeRole: UserRole.Candidate,
     }),
   };
 }
+
+// ── Service factories ─────────────────────────────────────────────────────────
+
+function makeNotifSvc(
+  notifRepo = new FakeNotificationRepo(),
+  prefRepo = new FakeNotificationPreferenceRepo(),
+  delayedRepo = new FakeDelayedDeliveryRepo(),
+) {
+  const dnd = new DNDService(prefRepo as any, delayedRepo as any);
+  return new NotificationService(notifRepo as any, prefRepo as any, dnd as any, delayedRepo as any);
+}
+
+function makeDigestSvc(
+  digestRepo = new FakeDigestRepo(),
+  notifRepo = new FakeNotificationRepo(),
+) {
+  return new DigestService(digestRepo as any, notifRepo as any);
+}
+
+// ── Seed data ─────────────────────────────────────────────────────────────────
 
 const unreadNotif: Notification = {
   id: 'n1', organizationId: 'org1', userId: 'user1',
   type: 'application_received', referenceType: 'application', referenceId: 'app1',
   eventId: 'ev1', message: 'You received an application', isRead: false,
-  deliveryMode: 'instant', isCanceled: false,
-  version: 1, createdAt: '2026-04-01T10:00:00Z', updatedAt: '2026-04-01T10:00:00Z',
+  deliveryMode: NotificationDeliveryMode.Instant, isCanceled: false,
+  version: 1, createdAt: now(), updatedAt: now(),
 };
 
 const readNotif: Notification = {
   id: 'n2', organizationId: 'org1', userId: 'user1',
   type: 'interview_confirmed', referenceType: 'interview', referenceId: 'int1',
   eventId: 'ev2', message: 'Interview confirmed', isRead: true,
-  deliveryMode: 'instant', isCanceled: false,
-  version: 1, createdAt: '2026-04-01T09:00:00Z', updatedAt: '2026-04-01T09:00:00Z',
+  deliveryMode: NotificationDeliveryMode.Instant, isCanceled: false,
+  version: 1, createdAt: now(), updatedAt: now(),
 };
 
 const samplePref: NotificationPreference = {
   id: 'pref1', userId: 'user1', organizationId: 'org1',
   eventType: 'application_received', instantEnabled: true, digestEnabled: false,
   dndStart: null, dndEnd: null,
-  version: 1, createdAt: '2026-04-01', updatedAt: '2026-04-01',
+  version: 1, createdAt: now(), updatedAt: now(),
 };
 
-function configure(overrides: Record<string, any> = {}) {
-  const notifSvc = {
-    getAllForUser: vi.fn().mockResolvedValue([unreadNotif, readNotif]),
-    getUnreadForUser: vi.fn().mockResolvedValue([unreadNotif]),
-    markAsRead: vi.fn().mockResolvedValue(undefined),
-    getUserPreferences: vi.fn().mockResolvedValue([samplePref]),
-    updatePreference: vi.fn().mockResolvedValue(samplePref),
-    ...overrides,
-  };
+// ── Configure helper ─────────────────────────────────────────────────────────
 
-  const digestSvc = {
-    getAllForUser: vi.fn().mockResolvedValue([]),
-    getUndeliveredForUser: vi.fn().mockResolvedValue([]),
-    markDelivered: vi.fn().mockResolvedValue(undefined),
-    generateDigest: vi.fn().mockResolvedValue(null),
-  };
+function configure(
+  seedNotifs: Notification[] = [],
+  seedPrefs: NotificationPreference[] = [],
+) {
+  const notifRepo = new FakeNotificationRepo();
+  if (seedNotifs.length) notifRepo.seed(seedNotifs);
+
+  const prefRepo = new FakeNotificationPreferenceRepo();
+  if (seedPrefs.length) prefRepo.seed(seedPrefs);
+
+  const delayedRepo = new FakeDelayedDeliveryRepo();
+  const digestRepo = new FakeDigestRepo();
+
+  const realNotifSvc = makeNotifSvc(notifRepo, prefRepo, delayedRepo);
+  const realDigestSvc = makeDigestSvc(digestRepo, notifRepo);
+
+  const sessionStub = makeSessionStub();
 
   TestBed.configureTestingModule({
     imports: [NotificationCenterComponent],
     providers: [
-      { provide: SessionService, useValue: makeSessionMock() },
-      { provide: NotificationService, useValue: notifSvc },
-      { provide: DigestService, useValue: digestSvc },
+      { provide: SessionService, useValue: sessionStub },
+      { provide: NotificationService, useValue: realNotifSvc },
+      { provide: DigestService, useValue: realDigestSvc },
     ],
   });
 
   const fixture = TestBed.createComponent(NotificationCenterComponent);
-  return { component: fixture.componentInstance, notifSvc };
+  return { component: fixture.componentInstance, notifRepo, prefRepo };
 }
 
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
 describe('NotificationCenterComponent', () => {
-  it('loads all notifications', async () => {
-    const { component, notifSvc } = configure();
+  it('loads all notifications via real NotificationService', async () => {
+    const { component } = configure([unreadNotif, readNotif]);
+
     await component.loadNotifications();
-    expect(notifSvc.getAllForUser).toHaveBeenCalledWith('user1', 'user1', 'org1');
-    expect(component.notifications().length).toBe(2);
+
+    expect(component.notifications()).toHaveLength(2);
     expect(component.unreadCount()).toBe(1);
   });
 
   it('filters to show only unread', async () => {
-    const { component } = configure();
+    const { component } = configure([unreadNotif, readNotif]);
+
     await component.loadNotifications();
     component.filter.set('unread');
-    expect(component.filteredNotifications().length).toBe(1);
+
+    expect(component.filteredNotifications()).toHaveLength(1);
     expect(component.filteredNotifications()[0].id).toBe('n1');
   });
 
-  it('marks individual notification as read', async () => {
-    const { component, notifSvc } = configure();
+  it('marks individual notification as read via real service', async () => {
+    const { component, notifRepo } = configure([unreadNotif, readNotif]);
+
     await component.loadNotifications();
     await component.onMarkRead(unreadNotif);
-    expect(notifSvc.markAsRead).toHaveBeenCalledWith('n1', 'user1', 'org1');
-    // Should update local state
+
+    // Local state updated
     expect(component.notifications().find(n => n.id === 'n1')?.isRead).toBe(true);
+    // Repo also updated
+    const updated = await notifRepo.getById('n1');
+    expect(updated?.isRead).toBe(true);
   });
 
-  it('marks all as read', async () => {
-    const { component, notifSvc } = configure();
+  it('marks all as read via real service', async () => {
+    const { component, notifRepo } = configure([unreadNotif, readNotif]);
+
     await component.loadNotifications();
     await component.onMarkAllRead();
-    expect(notifSvc.markAsRead).toHaveBeenCalledWith('n1', 'user1', 'org1');
+
     expect(component.notifications().every(n => n.isRead)).toBe(true);
+    const updatedN1 = await notifRepo.getById('n1');
+    expect(updatedN1?.isRead).toBe(true);
   });
 
-  it('loads and displays preferences', async () => {
-    const { component, notifSvc } = configure();
+  it('loads and displays preferences via real service', async () => {
+    const { component } = configure([], [samplePref]);
+
     await component.loadPreferences();
-    expect(notifSvc.getUserPreferences).toHaveBeenCalledWith('user1', 'user1');
-    expect(component.preferences().length).toBe(1);
+
+    expect(component.preferences()).toHaveLength(1);
     expect(component.getPrefValue('application_received', 'instant')).toBe(true);
     expect(component.getPrefValue('application_received', 'digest')).toBe(false);
   });
 
-  it('updates a preference', async () => {
-    const { component, notifSvc } = configure();
+  it('updates a preference via real service', async () => {
+    const { component, prefRepo } = configure([], [samplePref]);
+
     await component.loadPreferences();
-    // Toggle digest on for application_received
     component.onTogglePref('application_received', 'digest', { target: { checked: true } } as any);
     await component.onSavePref('application_received');
-    expect(notifSvc.updatePreference).toHaveBeenCalledWith(
-      'user1', 'org1', 'application_received',
-      true, true, null, null, 'user1',
-    );
+
+    const updatedPref = await prefRepo.getByUserAndType('user1', 'application_received');
+    expect(updatedPref?.digestEnabled).toBe(true);
   });
 });

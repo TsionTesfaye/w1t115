@@ -1,126 +1,149 @@
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+/**
+ * ContentListComponent tests — real ContentService and ModerationService backed
+ * by in-memory FakeContentPostRepo, etc. from helpers.ts.
+ *
+ * Boundary stubs kept:
+ *  - SessionService → plain stub (no crypto/IDB)
+ */
+
+import { describe, it, expect, afterEach } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal, computed } from '@angular/core';
+
 import { ContentListComponent } from '../content-list.component';
 import { SessionService } from '../../../../core/services/session.service';
 import { ContentService } from '../../../../core/services/content.service';
 import { ModerationService } from '../../../../core/services/moderation.service';
+
 import { UserRole, ContentPostStatus } from '../../../../core/enums';
 import { ContentPost } from '../../../../core/models';
+import { now } from '../../../../core/utils/id';
+
+import {
+  FakeContentPostRepo, FakeCommentRepo, FakeModerationCaseRepo,
+  FakeSensitiveWordRepo, FakeUserRepo,
+  fakeAudit,
+} from '../../../../core/services/__tests__/helpers';
 
 afterEach(() => {
   TestBed.resetTestingModule();
 });
 
-// ── Mock helpers ─────────────────────────────────────────────────────────────
+// ── Session stub ──────────────────────────────────────────────────────────────
 
-function makeSessionMock(role: UserRole) {
+function makeSessionStub(role: UserRole, userId = 'user1', orgId = 'org1') {
   return {
     activeRole: signal(role),
     isAuthenticated: computed(() => true),
     initialized: signal(true),
     currentUser: signal({ displayName: 'Test User' }),
-    organizationId: computed(() => 'org1'),
-    userId: computed(() => 'user1'),
+    organizationId: computed(() => orgId),
+    userId: computed(() => userId),
     userRoles: computed(() => [role]),
-    requireAuth: () => ({
-      userId: 'user1',
-      organizationId: 'org1',
-      roles: [role],
-      activeRole: role,
-    }),
+    requireAuth: () => ({ userId, organizationId: orgId, roles: [role], activeRole: role }),
   };
 }
+
+// ── Seed data ─────────────────────────────────────────────────────────────────
 
 const draftPost: ContentPost = {
   id: 'p1', organizationId: 'org1', authorId: 'user1',
   title: 'Draft Post', body: 'Some draft body', tags: ['tag1'], topics: [],
   status: ContentPostStatus.Draft, scheduledPublishAt: null, pinnedUntil: null,
-  version: 1, createdAt: '2026-01-01', updatedAt: '2026-01-01',
+  version: 1, createdAt: now(), updatedAt: now(),
 };
 
 const publishedPost: ContentPost = {
   id: 'p2', organizationId: 'org1', authorId: 'user1',
   title: 'Published Post', body: 'Live content', tags: [], topics: [],
   status: ContentPostStatus.Published, scheduledPublishAt: null, pinnedUntil: null,
-  version: 2, createdAt: '2026-01-01', updatedAt: '2026-01-02',
+  version: 2, createdAt: now(), updatedAt: now(),
 };
 
-const fakeModerationSvc = {
-  submitComment: vi.fn().mockResolvedValue({}),
-  getCommentsForPost: vi.fn().mockResolvedValue([]),
-  getPendingComments: vi.fn().mockResolvedValue([]),
-  decide: vi.fn().mockResolvedValue({}),
-};
+// ── Configure helper ─────────────────────────────────────────────────────────
 
-function configure(role: UserRole, overrides: Record<string, any> = {}) {
-  const contentSvc = {
-    listPosts: vi.fn().mockResolvedValue([]),
-    createPost: vi.fn().mockResolvedValue({ ...draftPost }),
-    transitionStatus: vi.fn().mockResolvedValue({ ...draftPost, status: ContentPostStatus.Published }),
-    pinPost: vi.fn().mockResolvedValue({}),
-    ...overrides,
-  };
-  const sessionMock = makeSessionMock(role);
+function configure(role: UserRole, seedPosts: ContentPost[] = []) {
+  const contentPostRepo = new FakeContentPostRepo();
+  if (seedPosts.length) contentPostRepo.seed(seedPosts);
+
+  const commentRepo = new FakeCommentRepo();
+  const modRepo = new FakeModerationCaseRepo();
+  const wordRepo = new FakeSensitiveWordRepo();
+  const userRepo = new FakeUserRepo();
+
+  const realContentSvc = new ContentService(contentPostRepo as any, fakeAudit as any);
+  const realModerationSvc = new ModerationService(
+    commentRepo as any, modRepo as any, wordRepo as any, userRepo as any, fakeAudit as any,
+  );
+
+  const sessionStub = makeSessionStub(role);
 
   TestBed.configureTestingModule({
     imports: [ContentListComponent],
     providers: [
-      { provide: SessionService, useValue: sessionMock },
-      { provide: ContentService, useValue: contentSvc },
-      { provide: ModerationService, useValue: fakeModerationSvc },
+      { provide: SessionService, useValue: sessionStub },
+      { provide: ContentService, useValue: realContentSvc },
+      { provide: ModerationService, useValue: realModerationSvc },
     ],
   });
 
   const fixture = TestBed.createComponent(ContentListComponent);
-  return { component: fixture.componentInstance, contentSvc, sessionMock };
+  return { component: fixture.componentInstance, contentPostRepo, realContentSvc };
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('ContentListComponent', () => {
-  it('loads posts from service', async () => {
-    const { component, contentSvc } = configure(UserRole.HRCoordinator, {
-      listPosts: vi.fn().mockResolvedValue([draftPost, publishedPost]),
-    });
+  it('loads posts from real ContentService — management sees all statuses', async () => {
+    const { component } = configure(UserRole.HRCoordinator, [draftPost, publishedPost]);
 
     await component.loadPosts();
 
-    expect(contentSvc.listPosts).toHaveBeenCalledWith([UserRole.HRCoordinator], 'org1');
     expect(component.posts()).toHaveLength(2);
     expect(component.isLoading()).toBe(false);
   });
 
-  it('creates a new post', async () => {
-    const { component, contentSvc } = configure(UserRole.Employer, {
-      listPosts: vi.fn().mockResolvedValue([]),
-      createPost: vi.fn().mockResolvedValue(draftPost),
-    });
+  it('candidate sees only published posts via real RBAC filter', async () => {
+    const { component } = configure(UserRole.Candidate, [draftPost, publishedPost]);
+
+    await component.loadPosts();
+
+    expect(component.posts()).toHaveLength(1);
+    expect(component.posts()[0].status).toBe(ContentPostStatus.Published);
+  });
+
+  it('creates a new draft post via real ContentService', async () => {
+    const { component, contentPostRepo } = configure(UserRole.Employer);
 
     await component.loadPosts();
     component.showCreateForm.set(true);
     component.postForm.patchValue({ title: 'Draft Post', body: 'Some draft body', tags: 'tag1', topics: '' });
     await component.onCreatePost();
 
-    expect(contentSvc.createPost).toHaveBeenCalledWith(
-      'Draft Post', 'Some draft body', ['tag1'], [], 'user1', [UserRole.Employer], 'org1',
-    );
     expect(component.showCreateForm()).toBe(false);
     expect(component.actionSuccess()).toBe('Post created as draft');
+    expect(contentPostRepo.snapshot().some(p => p.title === 'Draft Post')).toBe(true);
   });
 
-  it('publishes a draft post', async () => {
-    const { component, contentSvc } = configure(UserRole.HRCoordinator, {
-      listPosts: vi.fn().mockResolvedValue([draftPost]),
-      transitionStatus: vi.fn().mockResolvedValue({ ...draftPost, status: ContentPostStatus.Published }),
-    });
+  it('publishes a draft post via real state machine — Draft→Published', async () => {
+    const { component, contentPostRepo } = configure(UserRole.HRCoordinator, [draftPost]);
 
     await component.loadPosts();
     await component.onPublish(draftPost);
 
-    expect(contentSvc.transitionStatus).toHaveBeenCalledWith(
-      'p1', ContentPostStatus.Published, 'user1', [UserRole.HRCoordinator], 'org1', 1,
-    );
     expect(component.actionSuccess()).toBe('Post published');
+    const updated = contentPostRepo.snapshot().find(p => p.id === 'p1');
+    expect(updated?.status).toBe(ContentPostStatus.Published);
+  });
+
+  it('Candidate cannot create a post — real AuthorizationError from ContentService', async () => {
+    const { component } = configure(UserRole.Candidate);
+
+    component.showCreateForm.set(true);
+    component.postForm.patchValue({ title: 'Hack Post', body: 'body', tags: '', topics: '' });
+    await component.onCreatePost();
+
+    // Component catches the AuthorizationError and sets actionError
+    expect(component.actionError()).toBeTruthy();
   });
 });

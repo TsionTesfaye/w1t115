@@ -87,7 +87,7 @@ Step-by-step walkthrough to confirm the app is working after `docker-compose up`
 ```bash
 docker-compose run --rm app ./run_tests.sh
 ```
-**Expected:** `Test Files  51 passed (51)` · `Tests  657 passed (657)`.
+**Expected:** `Test Files  57 passed (57)` · `Tests  799 passed (799)`.
 
 ---
 

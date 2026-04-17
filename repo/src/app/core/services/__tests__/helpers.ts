@@ -15,6 +15,7 @@ import {
   DocumentQuotaUsage, ApplicationPacket, LineageLink, User,
   Session, Comment, ModerationCase, SensitiveWord,
   IntegrationSecret, WebhookQueueItem, IdempotencyKeyRecord, IntegrationResponse, OrgAdminKey,
+  PacketSection,
 } from '../../models';
 import {
   PacketStatus, NotificationDeliveryMode, InterviewStatus,
@@ -144,6 +145,7 @@ export class FakeDocumentQuotaRepo {
 export class FakeApplicationPacketRepo {
   private packets: ApplicationPacket[] = [];
   seed(items: ApplicationPacket[]): this { this.packets = [...items]; return this; }
+  snapshot(): ApplicationPacket[] { return [...this.packets]; }
   async getByApplication(appId: string): Promise<ApplicationPacket | null> {
     return this.packets.find(p => p.applicationId === appId) ?? null;
   }
@@ -152,6 +154,13 @@ export class FakeApplicationPacketRepo {
   async put(item: ApplicationPacket) {
     const idx = this.packets.findIndex(p => p.id === item.id);
     if (idx >= 0) this.packets[idx] = item; else this.packets.push(item);
+  }
+  async updateWithLock(id: string, updater: (current: ApplicationPacket) => ApplicationPacket): Promise<ApplicationPacket> {
+    const idx = this.packets.findIndex(p => p.id === id);
+    if (idx < 0) throw new Error(`FakeApplicationPacketRepo: not found: ${id}`);
+    const updated = updater(this.packets[idx]);
+    this.packets[idx] = updated;
+    return updated;
   }
 }
 
@@ -189,6 +198,13 @@ export class FakeNotificationPreferenceRepo {
   async put(item: NotificationPreference) {
     const idx = this.prefs.findIndex(p => p.id === item.id);
     if (idx >= 0) this.prefs[idx] = item; else this.prefs.push(item);
+  }
+  async updateWithLock(id: string, updater: (current: NotificationPreference) => NotificationPreference): Promise<NotificationPreference> {
+    const idx = this.prefs.findIndex(p => p.id === id);
+    if (idx < 0) throw new Error(`FakeNotificationPreferenceRepo: not found: ${id}`);
+    const updated = updater(this.prefs[idx]);
+    this.prefs[idx] = updated;
+    return updated;
   }
 }
 
@@ -508,4 +524,52 @@ export class FakeDataDictionaryRepo extends FakeStore<any> {
 
 export class FakeDatasetSnapshotRepo extends FakeStore<any> {
   async getByOrganization(orgId: string) { return this.store.filter((s: any) => s.organizationId === orgId); }
+}
+
+// ── FakePacketSectionRepo ─────────────────────────────────────────────────────
+
+export class FakePacketSectionRepo extends FakeStore<PacketSection> {
+  async getByPacket(packetId: string): Promise<PacketSection[]> {
+    return this.store.filter(s => s.applicationPacketId === packetId);
+  }
+}
+
+// ── FakeAuditLogRepo ──────────────────────────────────────────────────────────
+
+export class FakeAuditLogRepo {
+  private logs: any[] = [];
+  async getLast(): Promise<any | null> { return this.logs.at(-1) ?? null; }
+  async append(entry: any): Promise<void> { this.logs.push(entry); }
+  async getAll(): Promise<any[]> { return [...this.logs]; }
+  async getByActor(actorId: string): Promise<any[]> {
+    return this.logs.filter(l => l.actorId === actorId);
+  }
+  async getByDateRange(start: string, end: string): Promise<any[]> {
+    return this.logs.filter(l => l.timestamp >= start && l.timestamp <= end);
+  }
+  async search(opts: {
+    from?: string; to?: string; actorId?: string; action?: string;
+    entityType?: string; organizationId?: string;
+  }): Promise<any[]> {
+    return this.logs.filter(l => {
+      if (opts.organizationId && l.organizationId !== opts.organizationId) return false;
+      if (opts.actorId && l.actorId !== opts.actorId) return false;
+      if (opts.action && l.action !== opts.action) return false;
+      if (opts.entityType && l.entityType !== opts.entityType) return false;
+      if (opts.from && l.timestamp < opts.from) return false;
+      if (opts.to && l.timestamp > opts.to) return false;
+      return true;
+    });
+  }
+  snapshot() { return [...this.logs]; }
+}
+
+// ── makePacketSection factory ─────────────────────────────────────────────────
+
+export function makePacketSection(o: Partial<PacketSection> = {}): PacketSection {
+  return {
+    id: generateId(), applicationPacketId: 'packet1', sectionKey: 'personal_info',
+    payload: {}, isComplete: false,
+    version: 1, createdAt: now(), updatedAt: now(), ...o,
+  } as PacketSection;
 }

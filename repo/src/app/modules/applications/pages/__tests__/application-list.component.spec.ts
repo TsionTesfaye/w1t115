@@ -1,195 +1,292 @@
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+/**
+ * ApplicationListComponent — real service integration tests.
+ *
+ * Uses real ApplicationService with FakeApplicationRepo + FakeJobRepo.
+ * Includes optimistic-lock test.
+ */
+
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal, computed } from '@angular/core';
+import { provideRouter } from '@angular/router';
 import { ApplicationListComponent } from '../application-list.component';
 import { SessionService } from '../../../../core/services/session.service';
 import { ApplicationService } from '../../../../core/services/application.service';
 import { JobService } from '../../../../core/services/job.service';
-import { UserRole, ApplicationStage, ApplicationStatus } from '../../../../core/enums';
-import { Application } from '../../../../core/models';
+import { UserRole, ApplicationStage, ApplicationStatus, JobStatus } from '../../../../core/enums';
+import {
+  FakeJobRepo, FakeApplicationRepo, FakeLineageRepo,
+  FakeNotificationRepo, FakeUserRepo,
+  makeJob, makeApplication,
+  fakeAudit, fakeNotifService,
+} from '../../../../core/services/__tests__/helpers';
+import { OptimisticLockError } from '../../../../core/errors';
 
 afterEach(() => {
   TestBed.resetTestingModule();
 });
 
-function makeSessionMock(role: UserRole) {
+// ── Session stub ──────────────────────────────────────────────────────────────
+
+function makeSession(role: UserRole, userId = 'user1', orgId = 'org1') {
   return {
     activeRole: signal(role),
     isAuthenticated: computed(() => true),
     initialized: signal(true),
     currentUser: signal({ displayName: 'Test User' }),
-    organizationId: computed(() => 'org1'),
-    userId: computed(() => 'user1'),
+    organizationId: computed(() => orgId),
+    userId: computed(() => userId),
     userRoles: computed(() => [role]),
-    requireAuth: () => ({
-      userId: 'user1',
-      organizationId: 'org1',
-      roles: [role],
-      activeRole: role,
-    }),
+    requireAuth: () => ({ userId, organizationId: orgId, roles: [role], activeRole: role }),
   };
 }
 
-const draftApp: Application = {
-  id: 'a1', jobId: 'j1', candidateId: 'user1', organizationId: 'org1',
-  stage: ApplicationStage.Draft, status: ApplicationStatus.Active,
-  offerExpiresAt: null, submittedAt: null, version: 1,
-  createdAt: '2026-01-01', updatedAt: '2026-01-01',
-};
+// ── Real service factories ────────────────────────────────────────────────────
 
-const submittedApp: Application = {
-  id: 'a2', jobId: 'j1', candidateId: 'user1', organizationId: 'org1',
-  stage: ApplicationStage.Submitted, status: ApplicationStatus.Active,
-  offerExpiresAt: null, submittedAt: '2026-01-02', version: 2,
-  createdAt: '2026-01-01', updatedAt: '2026-01-02',
-};
+function makeJobService(jobRepo = new FakeJobRepo()) {
+  return new JobService(
+    jobRepo as any,
+    new FakeLineageRepo() as any,
+    fakeAudit as any,
+    new FakeUserRepo() as any,
+  );
+}
 
-const underReviewApp: Application = {
-  id: 'a3', jobId: 'j2', candidateId: 'c2', organizationId: 'org1',
-  stage: ApplicationStage.UnderReview, status: ApplicationStatus.Active,
-  offerExpiresAt: null, submittedAt: '2026-01-02', version: 3,
-  createdAt: '2026-01-01', updatedAt: '2026-01-03',
-};
+function makeAppService(appRepo = new FakeApplicationRepo(), jobRepo = new FakeJobRepo()) {
+  return new ApplicationService(
+    appRepo as any,
+    jobRepo as any,
+    new FakeLineageRepo() as any,
+    new FakeNotificationRepo() as any,
+    fakeAudit as any,
+    fakeNotifService as any,
+    new FakeUserRepo() as any,
+  );
+}
 
-function configure(role: UserRole, appOverrides: Record<string, any> = {}, jobOverrides: Record<string, any> = {}) {
-  const appSvc = {
-    listByCandidate: vi.fn().mockResolvedValue([]),
-    listByOrganization: vi.fn().mockResolvedValue([]),
-    transitionStage: vi.fn().mockResolvedValue({}),
-    withdraw: vi.fn().mockResolvedValue({}),
-    reject: vi.fn().mockResolvedValue({}),
-    deleteDraft: vi.fn().mockResolvedValue(undefined),
-    ...appOverrides,
-  };
-  const jobSvc = {
-    listJobs: vi.fn().mockResolvedValue([
-      { id: 'j1', title: 'Engineer', status: 'active' },
-      { id: 'j2', title: 'Designer', status: 'active' },
-    ]),
-    ...jobOverrides,
-  };
+// ── Configure ─────────────────────────────────────────────────────────────────
+
+function configure(
+  role: UserRole,
+  appRepo = new FakeApplicationRepo(),
+  jobRepo = new FakeJobRepo(),
+  userId = 'user1',
+  orgId = 'org1',
+) {
+  const realAppSvc = makeAppService(appRepo, jobRepo);
+  const realJobSvc = makeJobService(jobRepo);
+  const session = makeSession(role, userId, orgId);
 
   TestBed.configureTestingModule({
     imports: [ApplicationListComponent],
     providers: [
-      { provide: SessionService, useValue: makeSessionMock(role) },
-      { provide: ApplicationService, useValue: appSvc },
-      { provide: JobService, useValue: jobSvc },
+      provideRouter([]),
+      { provide: SessionService, useValue: session },
+      { provide: ApplicationService, useValue: realAppSvc },
+      { provide: JobService, useValue: realJobSvc },
     ],
   });
 
   const fixture = TestBed.createComponent(ApplicationListComponent);
-  return { component: fixture.componentInstance, appSvc, jobSvc };
+  return { component: fixture.componentInstance, appRepo, jobRepo, realAppSvc, realJobSvc };
 }
 
-describe('ApplicationListComponent', () => {
-  it('Candidate sees own applications', async () => {
-    const { component, appSvc } = configure(UserRole.Candidate, {
-      listByCandidate: vi.fn().mockResolvedValue([draftApp, submittedApp]),
-    });
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
+describe('ApplicationListComponent — real ApplicationService', () => {
+  it('Candidate sees only their own applications', async () => {
+    const appRepo = new FakeApplicationRepo();
+    appRepo.seed([
+      makeApplication({ id: 'a1', candidateId: 'user1', organizationId: 'org1', status: ApplicationStatus.Active }),
+      makeApplication({ id: 'a2', candidateId: 'other', organizationId: 'org1', status: ApplicationStatus.Active }),
+    ]);
+
+    const { component } = configure(UserRole.Candidate, appRepo);
     await component.loadApps();
-    expect(appSvc.listByCandidate).toHaveBeenCalledWith('user1', 'user1', 'org1');
-    expect(component.apps()).toHaveLength(2);
+
+    expect(component.apps()).toHaveLength(1);
+    expect(component.apps()[0].id).toBe('a1');
   });
 
-  it('Management sees all org applications', async () => {
-    const { component, appSvc } = configure(UserRole.HRCoordinator, {
-      listByOrganization: vi.fn().mockResolvedValue([draftApp, submittedApp, underReviewApp]),
-    });
+  it('Management (HRCoordinator) sees all org applications', async () => {
+    const appRepo = new FakeApplicationRepo();
+    appRepo.seed([
+      makeApplication({ id: 'a1', candidateId: 'u1', organizationId: 'org1', stage: ApplicationStage.Draft, status: ApplicationStatus.Active }),
+      makeApplication({ id: 'a2', candidateId: 'u2', organizationId: 'org1', stage: ApplicationStage.Submitted, status: ApplicationStatus.Active }),
+      makeApplication({ id: 'a3', candidateId: 'u3', organizationId: 'org1', stage: ApplicationStage.UnderReview, status: ApplicationStatus.Active }),
+    ]);
 
+    const { component } = configure(UserRole.HRCoordinator, appRepo);
     await component.loadApps();
-    expect(appSvc.listByOrganization).toHaveBeenCalledWith('user1', [UserRole.HRCoordinator], 'org1');
+
     expect(component.apps()).toHaveLength(3);
   });
 
   it('Candidate can submit a Draft application', async () => {
-    const { component, appSvc } = configure(UserRole.Candidate, {
-      listByCandidate: vi.fn().mockResolvedValue([draftApp]),
-      transitionStage: vi.fn().mockResolvedValue({ ...draftApp, stage: ApplicationStage.Submitted }),
+    const appRepo = new FakeApplicationRepo();
+    const draftApp = makeApplication({
+      id: 'a1', candidateId: 'user1', organizationId: 'org1',
+      stage: ApplicationStage.Draft, status: ApplicationStatus.Active, version: 1,
     });
+    appRepo.seed([draftApp]);
 
+    const { component } = configure(UserRole.Candidate, appRepo);
     await component.loadApps();
     await component.onSubmit(draftApp);
 
-    expect(appSvc.transitionStage).toHaveBeenCalledWith(
-      'a1', ApplicationStage.Submitted, 'user1', [UserRole.Candidate], 'org1', 1,
-    );
+    const updated = await appRepo.getById('a1');
+    expect(updated?.stage).toBe(ApplicationStage.Submitted);
     expect(component.actionSuccess()).toBe('Application submitted successfully');
   });
 
   it('Candidate can withdraw a Submitted application', async () => {
-    const { component, appSvc } = configure(UserRole.Candidate, {
-      listByCandidate: vi.fn().mockResolvedValue([submittedApp]),
-      withdraw: vi.fn().mockResolvedValue({ ...submittedApp, status: ApplicationStatus.Withdrawn }),
+    const appRepo = new FakeApplicationRepo();
+    const submittedApp = makeApplication({
+      id: 'a2', candidateId: 'user1', organizationId: 'org1',
+      stage: ApplicationStage.Submitted, status: ApplicationStatus.Active, version: 2,
     });
+    appRepo.seed([submittedApp]);
 
+    const { component } = configure(UserRole.Candidate, appRepo);
     await component.loadApps();
     await component.onWithdraw(submittedApp);
 
-    expect(appSvc.withdraw).toHaveBeenCalledWith('a2', 'user1', 'org1', 2);
+    const updated = await appRepo.getById('a2');
+    expect(updated?.status).toBe(ApplicationStatus.Withdrawn);
     expect(component.actionSuccess()).toBe('Application withdrawn');
   });
 
-  it('Management can advance application stage', async () => {
-    const { component, appSvc } = configure(UserRole.HRCoordinator, {
-      listByOrganization: vi.fn().mockResolvedValue([submittedApp]),
-      transitionStage: vi.fn().mockResolvedValue({ ...submittedApp, stage: ApplicationStage.UnderReview }),
+  it('Management (HRCoordinator) can advance application stage', async () => {
+    const appRepo = new FakeApplicationRepo();
+    const submittedApp = makeApplication({
+      id: 'a2', candidateId: 'u1', organizationId: 'org1',
+      stage: ApplicationStage.Submitted, status: ApplicationStatus.Active, version: 2,
     });
+    appRepo.seed([submittedApp]);
 
+    const { component } = configure(UserRole.HRCoordinator, appRepo);
     await component.loadApps();
     await component.onAdvance(submittedApp, ApplicationStage.UnderReview);
 
-    expect(appSvc.transitionStage).toHaveBeenCalledWith(
-      'a2', ApplicationStage.UnderReview, 'user1', [UserRole.HRCoordinator], 'org1', 2,
-    );
+    const updated = await appRepo.getById('a2');
+    expect(updated?.stage).toBe(ApplicationStage.UnderReview);
     expect(component.actionSuccess()).toContain('advanced');
   });
 
-  it('Management can reject an application', async () => {
-    const { component, appSvc } = configure(UserRole.Employer, {
-      listByOrganization: vi.fn().mockResolvedValue([submittedApp]),
-      reject: vi.fn().mockResolvedValue({ ...submittedApp, status: ApplicationStatus.Rejected }),
+  it('Management (Employer) can reject a submitted application', async () => {
+    const appRepo = new FakeApplicationRepo();
+    const submittedApp = makeApplication({
+      id: 'a2', candidateId: 'u1', organizationId: 'org1',
+      stage: ApplicationStage.Submitted, status: ApplicationStatus.Active, version: 2,
     });
+    appRepo.seed([submittedApp]);
 
+    const { component } = configure(UserRole.Employer, appRepo);
     await component.loadApps();
     await component.onReject(submittedApp);
 
-    expect(appSvc.reject).toHaveBeenCalledWith('a2', 'user1', [UserRole.Employer], 'org1', 2);
+    const updated = await appRepo.getById('a2');
+    expect(updated?.status).toBe(ApplicationStatus.Rejected);
     expect(component.actionSuccess()).toBe('Application rejected');
   });
 
-  it('shows error on duplicate apply or invalid transition', async () => {
-    const { component } = configure(UserRole.Candidate, {
-      listByCandidate: vi.fn().mockResolvedValue([submittedApp]),
-      withdraw: vi.fn().mockRejectedValue(new Error('Application status changed concurrently')),
-    });
+  it('resolves job titles from real job service', async () => {
+    const jobRepo = new FakeJobRepo();
+    jobRepo.seed([
+      makeJob({ id: 'j1', title: 'Engineer', status: JobStatus.Active, organizationId: 'org1' }),
+    ]);
 
+    const appRepo = new FakeApplicationRepo();
+    appRepo.seed([
+      makeApplication({ id: 'a1', candidateId: 'user1', organizationId: 'org1', jobId: 'j1', status: ApplicationStatus.Active }),
+    ]);
+
+    const { component } = configure(UserRole.Candidate, appRepo, jobRepo);
     await component.loadApps();
-    await component.onWithdraw(submittedApp);
 
-    expect(component.actionError()).toBe('Application status changed concurrently');
-  });
-
-  it('resolves job titles from job service', async () => {
-    const { component } = configure(UserRole.Candidate, {
-      listByCandidate: vi.fn().mockResolvedValue([draftApp]),
-    });
-
-    await component.loadApps();
     expect(component.jobTitleMap().get('j1')).toBe('Engineer');
   });
 
-  it('filters by stage', async () => {
-    const { component } = configure(UserRole.HRCoordinator, {
-      listByOrganization: vi.fn().mockResolvedValue([draftApp, submittedApp, underReviewApp]),
-    });
+  it('filters applications by stage', async () => {
+    const appRepo = new FakeApplicationRepo();
+    appRepo.seed([
+      makeApplication({ id: 'a1', candidateId: 'user1', organizationId: 'org1', stage: ApplicationStage.Draft, status: ApplicationStatus.Active }),
+      makeApplication({ id: 'a2', candidateId: 'user1', organizationId: 'org1', stage: ApplicationStage.Submitted, status: ApplicationStatus.Active }),
+    ]);
 
+    const { component } = configure(UserRole.Candidate, appRepo);
     await component.loadApps();
-    expect(component.filteredApps()).toHaveLength(3);
+
+    expect(component.filteredApps()).toHaveLength(2);
 
     component.stageFilter.set('submitted');
     expect(component.filteredApps()).toHaveLength(1);
     expect(component.filteredApps()[0].id).toBe('a2');
+  });
+
+  it('shows error when repo throws during load', async () => {
+    const badRepo = new FakeApplicationRepo();
+    (badRepo as any).getByCandidate = async () => { throw new Error('DB read failed'); };
+
+    const { component } = configure(UserRole.Candidate, badRepo);
+    await component.loadApps();
+
+    expect(component.error()).toContain('DB read failed');
+  });
+
+  it('empty list when no applications exist', async () => {
+    const { component } = configure(UserRole.Candidate);
+    await component.loadApps();
+    expect(component.apps()).toHaveLength(0);
+    expect(component.isLoading()).toBe(false);
+  });
+});
+
+// ── Optimistic-lock test ──────────────────────────────────────────────────────
+
+describe('ApplicationListComponent — optimistic locking', () => {
+  it('onWithdraw fails with OptimisticLockError when version is stale', async () => {
+    const appRepo = new FakeApplicationRepo();
+    const app = makeApplication({
+      id: 'a1', candidateId: 'user1', organizationId: 'org1',
+      stage: ApplicationStage.Submitted, status: ApplicationStatus.Active, version: 1,
+    });
+    appRepo.seed([app]);
+
+    const { component } = configure(UserRole.Candidate, appRepo);
+    await component.loadApps();
+
+    // Component holds app with version: 1
+    expect(component.apps()[0].version).toBe(1);
+
+    // Externally bump version in repo (simulates concurrent write)
+    const stored = (await appRepo.getById('a1'))!;
+    await appRepo.put({ ...stored, version: 5 });
+
+    // Now attempt withdraw — optimistic lock check will fail
+    await component.onWithdraw(app);
+
+    expect(component.actionError()).toBeTruthy();
+    // OptimisticLockError message contains 'modified'
+    expect(component.actionError()).toContain('modified');
+  });
+
+  it('onSubmit fails with OptimisticLockError when version is stale', async () => {
+    const appRepo = new FakeApplicationRepo();
+    const app = makeApplication({
+      id: 'a1', candidateId: 'user1', organizationId: 'org1',
+      stage: ApplicationStage.Draft, status: ApplicationStatus.Active, version: 1,
+    });
+    appRepo.seed([app]);
+
+    const { component } = configure(UserRole.Candidate, appRepo);
+    await component.loadApps();
+
+    // Externally bump version
+    await appRepo.put({ ...app, version: 3 });
+
+    await component.onSubmit(app);
+
+    expect(component.actionError()).toBeTruthy();
   });
 });

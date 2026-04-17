@@ -1,122 +1,143 @@
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+/**
+ * ModerationPanelComponent tests — real ModerationService backed by
+ * in-memory repos from helpers.ts.
+ *
+ * Boundary stubs kept:
+ *  - SessionService → plain stub (no crypto/IDB)
+ */
+
+import { describe, it, expect, afterEach } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal, computed } from '@angular/core';
+
 import { ModerationPanelComponent } from '../moderation-panel.component';
 import { SessionService } from '../../../../core/services/session.service';
 import { ModerationService } from '../../../../core/services/moderation.service';
-import { UserRole, ModerationDecision, CommentStatus } from '../../../../core/enums';
+
+import { UserRole, CommentStatus } from '../../../../core/enums';
 import { Comment } from '../../../../core/models';
+import { now } from '../../../../core/utils/id';
+
+import {
+  FakeCommentRepo, FakeModerationCaseRepo, FakeSensitiveWordRepo, FakeUserRepo,
+  fakeAudit,
+} from '../../../../core/services/__tests__/helpers';
 
 afterEach(() => {
   TestBed.resetTestingModule();
 });
 
-// ── Mock helpers ─────────────────────────────────────────────────────────────
+// ── Session stub ──────────────────────────────────────────────────────────────
 
-function makeSessionMock(role: UserRole) {
+function makeSessionStub(role: UserRole, userId = 'mod1', orgId = 'org1') {
   return {
     activeRole: signal(role),
     isAuthenticated: computed(() => true),
     initialized: signal(true),
     currentUser: signal({ displayName: 'Test Moderator' }),
-    organizationId: computed(() => 'org1'),
-    userId: computed(() => 'mod1'),
+    organizationId: computed(() => orgId),
+    userId: computed(() => userId),
     userRoles: computed(() => [role]),
-    requireAuth: () => ({
-      userId: 'mod1',
-      organizationId: 'org1',
-      roles: [role],
-      activeRole: role,
-    }),
+    requireAuth: () => ({ userId, organizationId: orgId, roles: [role], activeRole: role }),
   };
 }
 
-const pendingComment1: Comment = {
-  id: 'c1', organizationId: 'org1', postId: 'post1', authorId: 'author1',
-  content: 'Suspicious comment', status: CommentStatus.Pending, moderationReason: null,
-  version: 1, createdAt: '2026-01-01', updatedAt: '2026-01-01',
-};
+// ── Pending comment factory ───────────────────────────────────────────────────
 
-const pendingComment2: Comment = {
-  id: 'c2', organizationId: 'org1', postId: 'post2', authorId: 'author2',
-  content: 'Another flagged comment', status: CommentStatus.Pending, moderationReason: null,
-  version: 1, createdAt: '2026-01-02', updatedAt: '2026-01-02',
-};
-
-function configure(role: UserRole, overrides: Record<string, any> = {}) {
-  const modSvc = {
-    getPendingComments: vi.fn().mockResolvedValue([]),
-    decide: vi.fn().mockResolvedValue({ ...pendingComment1, status: CommentStatus.Approved }),
-    ...overrides,
+function makePendingComment(id: string, postId = 'post1'): Comment {
+  return {
+    id, organizationId: 'org1', postId, authorId: 'author1',
+    content: 'Flagged comment content',
+    status: CommentStatus.Pending, moderationReason: null,
+    version: 1, createdAt: now(), updatedAt: now(),
   };
-  const sessionMock = makeSessionMock(role);
+}
+
+// ── Configure helper ─────────────────────────────────────────────────────────
+
+function configure(role: UserRole, seedComments: Comment[] = []) {
+  const commentRepo = new FakeCommentRepo();
+  if (seedComments.length) commentRepo.seed(seedComments);
+
+  const modRepo = new FakeModerationCaseRepo();
+  const wordRepo = new FakeSensitiveWordRepo();
+  const userRepo = new FakeUserRepo();
+
+  const realModSvc = new ModerationService(
+    commentRepo as any, modRepo as any, wordRepo as any, userRepo as any, fakeAudit as any,
+  );
+
+  const sessionStub = makeSessionStub(role);
 
   TestBed.configureTestingModule({
     imports: [ModerationPanelComponent],
     providers: [
-      { provide: SessionService, useValue: sessionMock },
-      { provide: ModerationService, useValue: modSvc },
+      { provide: SessionService, useValue: sessionStub },
+      { provide: ModerationService, useValue: realModSvc },
     ],
   });
 
   const fixture = TestBed.createComponent(ModerationPanelComponent);
-  return { component: fixture.componentInstance, modSvc, sessionMock };
+  return { component: fixture.componentInstance, commentRepo, realModSvc };
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('ModerationPanelComponent', () => {
-  it('loads pending comments', async () => {
-    const { component, modSvc } = configure(UserRole.HRCoordinator, {
-      getPendingComments: vi.fn().mockResolvedValue([pendingComment1, pendingComment2]),
-    });
+  it('loads pending comments via real ModerationService', async () => {
+    const c1 = makePendingComment('c1', 'post1');
+    const c2 = makePendingComment('c2', 'post2');
+    const { component } = configure(UserRole.HRCoordinator, [c1, c2]);
 
     await component.loadPending();
 
-    expect(modSvc.getPendingComments).toHaveBeenCalledWith([UserRole.HRCoordinator], 'org1');
     expect(component.pendingComments()).toHaveLength(2);
     expect(component.isLoading()).toBe(false);
   });
 
-  it('approves a comment with reason', async () => {
-    const { component, modSvc } = configure(UserRole.Administrator, {
-      getPendingComments: vi.fn().mockResolvedValue([pendingComment1]),
-      decide: vi.fn().mockResolvedValue({ ...pendingComment1, status: CommentStatus.Approved }),
-    });
+  it('approves a comment — real state machine transitions Pending→Approved', async () => {
+    const c1 = makePendingComment('c1');
+    const { component, commentRepo } = configure(UserRole.Administrator, [c1]);
 
     await component.loadPending();
     expect(component.pendingComments()).toHaveLength(1);
 
-    // Set a reason via the internal map
     (component as any).reasons.set('c1', 'Looks fine after review');
-    await component.onApprove(pendingComment1);
+    await component.onApprove(c1);
 
-    expect(modSvc.decide).toHaveBeenCalledWith(
-      'c1', ModerationDecision.Approved, 'Looks fine after review', 'mod1', [UserRole.Administrator], 'org1',
-    );
-    // Comment should be removed from the pending list
     expect(component.pendingComments()).toHaveLength(0);
     expect(component.actionSuccess()).toBe('Comment approved');
+    const updated = await commentRepo.getById('c1');
+    expect(updated?.status).toBe(CommentStatus.Approved);
   });
 
-  it('rejects a comment with reason', async () => {
-    const { component, modSvc } = configure(UserRole.HRCoordinator, {
-      getPendingComments: vi.fn().mockResolvedValue([pendingComment1, pendingComment2]),
-      decide: vi.fn().mockResolvedValue({ ...pendingComment2, status: CommentStatus.Rejected }),
-    });
+  it('rejects a comment — real state machine transitions Pending→Rejected', async () => {
+    const c1 = makePendingComment('c1', 'post1');
+    const c2 = makePendingComment('c2', 'post2');
+    const { component, commentRepo } = configure(UserRole.HRCoordinator, [c1, c2]);
 
     await component.loadPending();
     expect(component.pendingComments()).toHaveLength(2);
 
     (component as any).reasons.set('c2', 'Contains spam links');
-    await component.onReject(pendingComment2);
+    await component.onReject(c2);
 
-    expect(modSvc.decide).toHaveBeenCalledWith(
-      'c2', ModerationDecision.Rejected, 'Contains spam links', 'mod1', [UserRole.HRCoordinator], 'org1',
-    );
-    // Only the rejected comment should be removed
     expect(component.pendingComments()).toHaveLength(1);
     expect(component.pendingComments()[0].id).toBe('c1');
     expect(component.actionSuccess()).toBe('Comment rejected');
+    const updated = await commentRepo.getById('c2');
+    expect(updated?.status).toBe(CommentStatus.Rejected);
+  });
+
+  it('Candidate cannot approve comments — real AuthorizationError from ModerationService', async () => {
+    const c1 = makePendingComment('c1');
+    const { component } = configure(UserRole.Candidate, [c1]);
+
+    await component.loadPending();
+    (component as any).reasons.set('c1', 'Looks fine');
+    await component.onApprove(c1);
+
+    // The component catches AuthorizationError and sets actionError
+    expect(component.actionError()).toBeTruthy();
   });
 });

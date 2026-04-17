@@ -1,35 +1,43 @@
-import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
+/**
+ * JobDetailComponent — real service integration tests.
+ *
+ * Uses real JobService and ApplicationService with FakeStore in-memory repos.
+ * Includes optimistic-lock test: seed job v1, bump to v2 externally, call action.
+ */
+
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal, computed } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
+import { provideRouter } from '@angular/router';
 import { JobDetailComponent } from '../job-detail.component';
 import { SessionService } from '../../../../core/services/session.service';
 import { JobService } from '../../../../core/services/job.service';
 import { ApplicationService } from '../../../../core/services/application.service';
 import { UserRole, JobStatus } from '../../../../core/enums';
-import { Job } from '../../../../core/models';
+import {
+  FakeJobRepo, FakeApplicationRepo, FakeLineageRepo,
+  FakeNotificationRepo, FakeUserRepo,
+  makeJob,
+  fakeAudit, fakeNotifService,
+} from '../../../../core/services/__tests__/helpers';
 
 afterEach(() => {
   TestBed.resetTestingModule();
 });
 
-// ── Mock helpers ─────────────────────────────────────────────────────────────
+// ── Session stub ──────────────────────────────────────────────────────────────
 
-function makeSessionMock(role: UserRole) {
+function makeSession(role: UserRole, userId = 'user1', orgId = 'org1') {
   return {
     activeRole: signal(role),
     isAuthenticated: computed(() => true),
     initialized: signal(true),
     currentUser: signal({ displayName: 'Test User' }),
-    organizationId: computed(() => 'org1'),
-    userId: computed(() => 'user1'),
+    organizationId: computed(() => orgId),
+    userId: computed(() => userId),
     userRoles: computed(() => [role]),
-    requireAuth: () => ({
-      userId: 'user1',
-      organizationId: 'org1',
-      roles: [role],
-      activeRole: role,
-    }),
+    requireAuth: () => ({ userId, organizationId: orgId, roles: [role], activeRole: role }),
   };
 }
 
@@ -43,156 +51,159 @@ function makeRouteMock(jobId: string) {
   };
 }
 
-const draftJob: Job = {
-  id: 'j1', organizationId: 'org1', ownerUserId: 'user1',
-  title: 'Draft Job', description: 'A draft', tags: ['ts'], topics: ['dev'],
-  status: JobStatus.Draft, version: 1, createdAt: '2026-01-01', updatedAt: '2026-01-01',
-};
+// ── Real service factories ────────────────────────────────────────────────────
 
-const activeJob: Job = {
-  id: 'j2', organizationId: 'org1', ownerUserId: 'user1',
-  title: 'Active Job', description: 'An active one', tags: [], topics: [],
-  status: JobStatus.Active, version: 2, createdAt: '2026-01-01', updatedAt: '2026-01-02',
-};
+function makeJobService(jobRepo = new FakeJobRepo()) {
+  return new JobService(
+    jobRepo as any,
+    new FakeLineageRepo() as any,
+    fakeAudit as any,
+    new FakeUserRepo() as any,
+  );
+}
+
+function makeAppService(appRepo = new FakeApplicationRepo(), jobRepo = new FakeJobRepo()) {
+  return new ApplicationService(
+    appRepo as any,
+    jobRepo as any,
+    new FakeLineageRepo() as any,
+    new FakeNotificationRepo() as any,
+    fakeAudit as any,
+    fakeNotifService as any,
+    new FakeUserRepo() as any,
+  );
+}
+
+// ── Configure ─────────────────────────────────────────────────────────────────
 
 function configure(
   role: UserRole,
   jobId: string,
-  jobOverrides: Record<string, any> = {},
-  appOverrides: Record<string, any> = {},
+  jobRepo = new FakeJobRepo(),
+  appRepo = new FakeApplicationRepo(),
+  userId = 'user1',
+  orgId = 'org1',
 ) {
-  const jobSvc = {
-    getJob: vi.fn().mockResolvedValue(activeJob),
-    transitionJobStatus: vi.fn().mockResolvedValue({ ...draftJob, status: JobStatus.Active }),
-    ...jobOverrides,
-  };
-  const appSvc = {
-    createApplication: vi.fn().mockResolvedValue({ id: 'app1' }),
-    ...appOverrides,
-  };
-  const sessionMock = makeSessionMock(role);
-  const routeMock = makeRouteMock(jobId);
-  const routerMock = { navigate: vi.fn() };
+  const realJobSvc = makeJobService(jobRepo);
+  const realAppSvc = makeAppService(appRepo, jobRepo);
+  const session = makeSession(role, userId, orgId);
 
   TestBed.configureTestingModule({
     imports: [JobDetailComponent],
     providers: [
-      { provide: SessionService, useValue: sessionMock },
-      { provide: JobService, useValue: jobSvc },
-      { provide: ApplicationService, useValue: appSvc },
-      { provide: ActivatedRoute, useValue: routeMock },
-      { provide: Router, useValue: routerMock },
+      provideRouter([]),
+      { provide: SessionService, useValue: session },
+      { provide: JobService, useValue: realJobSvc },
+      { provide: ApplicationService, useValue: realAppSvc },
+      { provide: ActivatedRoute, useValue: makeRouteMock(jobId) },
+      { provide: Router, useValue: { navigate: vi.fn() } },
     ],
   });
 
   const fixture = TestBed.createComponent(JobDetailComponent);
-  return { component: fixture.componentInstance, jobSvc, appSvc, sessionMock, routerMock };
+  return { component: fixture.componentInstance, jobRepo, appRepo, realJobSvc, realAppSvc };
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
-describe('JobDetailComponent', () => {
-  it('loads job by ID from route param', async () => {
-    const { component, jobSvc } = configure(UserRole.Candidate, 'j2', {
-      getJob: vi.fn().mockResolvedValue(activeJob),
-    });
+describe('JobDetailComponent — real JobService', () => {
+  it('loads job by ID from route param via real service', async () => {
+    const jobRepo = new FakeJobRepo();
+    const job = makeJob({ id: 'j1', status: JobStatus.Active, organizationId: 'org1', ownerUserId: 'user1' });
+    jobRepo.seed([job]);
 
+    const { component } = configure(UserRole.Candidate, 'j1', jobRepo);
     await component.loadJob();
 
-    expect(jobSvc.getJob).toHaveBeenCalledWith('j2', 'org1');
-    expect(component.job()).toEqual(activeJob);
+    expect(component.job()?.id).toBe('j1');
     expect(component.isLoading()).toBe(false);
+    expect(component.error()).toBeNull();
   });
 
-  it('shows status transition buttons for management', async () => {
-    const updatedJob = { ...draftJob, status: JobStatus.Active, version: 2 };
-    const { component, jobSvc } = configure(UserRole.Employer, 'j1', {
-      getJob: vi.fn().mockResolvedValue(draftJob),
-      transitionJobStatus: vi.fn().mockResolvedValue(updatedJob),
-    });
-
+  it('job() is null when job not found in repo', async () => {
+    const { component } = configure(UserRole.Employer, 'missing');
     await component.loadJob();
-    expect(component.job()!.status).toBe(JobStatus.Draft);
+
+    expect(component.job()).toBeNull();
+    expect(component.isLoading()).toBe(false);
+    expect(component.error()).toBeTruthy();
+  });
+
+  it('shows error when job belongs to different org', async () => {
+    const jobRepo = new FakeJobRepo();
+    jobRepo.seed([makeJob({ id: 'j1', organizationId: 'other-org', ownerUserId: 'user1' })]);
+
+    const { component } = configure(UserRole.Employer, 'j1', jobRepo);
+    await component.loadJob();
+
+    expect(component.error()).toBeTruthy();
+    expect(component.job()).toBeNull();
+  });
+
+  it('Employer can publish a Draft job via onTransition', async () => {
+    const jobRepo = new FakeJobRepo();
+    const draftJob = makeJob({ id: 'j1', status: JobStatus.Draft, organizationId: 'org1', ownerUserId: 'user1', version: 1 });
+    jobRepo.seed([draftJob]);
+
+    const { component } = configure(UserRole.Employer, 'j1', jobRepo);
+    await component.loadJob();
+
+    expect(component.job()?.status).toBe(JobStatus.Draft);
     expect(component.isManagement()).toBe(true);
 
-    // Simulate publishing the draft
     await component.onTransition('active');
 
-    expect(jobSvc.transitionJobStatus).toHaveBeenCalledWith(
-      'j1', JobStatus.Active, 'user1', [UserRole.Employer], 'org1', 1,
-    );
-    expect(component.job()!.status).toBe(JobStatus.Active);
+    const updated = await jobRepo.getById('j1');
+    expect(updated?.status).toBe(JobStatus.Active);
+    expect(component.job()?.status).toBe(JobStatus.Active);
     expect(component.actionSuccess()).toBe('Job status changed to active');
   });
-});
 
-// ── Negative-path tests ───────────────────────────────────────────────────────
+  it('shows actionError when invalid status transition attempted', async () => {
+    const jobRepo = new FakeJobRepo();
+    // Closed job: Closed → Draft is not a valid transition
+    const closedJob = makeJob({ id: 'j1', status: JobStatus.Closed, organizationId: 'org1', ownerUserId: 'user1', version: 1 });
+    jobRepo.seed([closedJob]);
 
-describe('JobDetailComponent — error and edge cases', () => {
-  it('shows error when getJob throws', async () => {
-    const { component } = configure(UserRole.Employer, 'bad-id', {
-      getJob: vi.fn().mockRejectedValue(new Error('Not found')),
-    });
-
+    const { component } = configure(UserRole.Employer, 'j1', jobRepo);
     await component.loadJob();
-
-    expect(component.error()).toBe('Not found');
-    expect(component.job()).toBeNull();
-    expect(component.isLoading()).toBe(false);
-  });
-
-  it('job() is null when getJob returns null', async () => {
-    const { component } = configure(UserRole.Employer, 'missing', {
-      getJob: vi.fn().mockResolvedValue(null),
-    });
-
-    await component.loadJob();
-
-    expect(component.job()).toBeNull();
-    expect(component.isLoading()).toBe(false);
-  });
-
-  it('shows actionError when transitionJobStatus throws', async () => {
-    const { component } = configure(UserRole.Employer, 'j1', {
-      getJob: vi.fn().mockResolvedValue(draftJob),
-      transitionJobStatus: vi.fn().mockRejectedValue(new Error('Invalid transition')),
-    });
-
-    await component.loadJob();
+    // 'active' is not a valid transition from 'closed' — state machine should throw
     await component.onTransition('active');
 
-    expect(component.actionError()).toContain('Invalid transition');
+    expect(component.actionError()).toBeTruthy();
     expect(component.actionSuccess()).toBeNull();
   });
 
-  it('candidate can apply to an active job (onApply)', async () => {
-    const { component, appSvc } = configure(UserRole.Candidate, 'j2', {
-      getJob: vi.fn().mockResolvedValue(activeJob),
-    });
+  it('Candidate can apply to an Active job via onApply', async () => {
+    const jobRepo = new FakeJobRepo();
+    const appRepo = new FakeApplicationRepo();
+    const activeJob = makeJob({ id: 'j2', status: JobStatus.Active, organizationId: 'org1', ownerUserId: 'employer1' });
+    jobRepo.seed([activeJob]);
 
+    const { component } = configure(UserRole.Candidate, 'j2', jobRepo, appRepo);
     await component.loadJob();
     await component.onApply();
 
-    expect(appSvc.createApplication).toHaveBeenCalledWith(
-      'j2', 'user1', 'org1', [UserRole.Candidate],
-    );
+    const apps = await appRepo.getAll();
+    expect(apps).toHaveLength(1);
+    expect(apps[0].jobId).toBe('j2');
     expect(component.actionSuccess()).toContain('Application created');
   });
 
-  it('shows actionError when createApplication throws', async () => {
-    const { component } = configure(UserRole.Candidate, 'j2',
-      { getJob: vi.fn().mockResolvedValue(activeJob) },
-      { createApplication: vi.fn().mockRejectedValue(new Error('Already applied')) },
-    );
+  it('shows actionError when Candidate applies to Draft job', async () => {
+    const jobRepo = new FakeJobRepo();
+    const draftJob = makeJob({ id: 'j1', status: JobStatus.Draft, organizationId: 'org1' });
+    jobRepo.seed([draftJob]);
 
+    const { component } = configure(UserRole.Candidate, 'j1', jobRepo);
     await component.loadJob();
     await component.onApply();
 
-    expect(component.actionError()).toContain('Already applied');
+    expect(component.actionError()).toBeTruthy();
   });
 
   it('isManagement is false for Candidate role', () => {
-    const { component } = configure(UserRole.Candidate, 'j2');
+    const { component } = configure(UserRole.Candidate, 'j1');
     expect(component.isManagement()).toBe(false);
   });
 
@@ -204,5 +215,48 @@ describe('JobDetailComponent — error and edge cases', () => {
   it('isCandidate is false for Employer role', () => {
     const { component } = configure(UserRole.Employer, 'j1');
     expect(component.isCandidate()).toBe(false);
+  });
+});
+
+// ── Optimistic-lock test ──────────────────────────────────────────────────────
+
+describe('JobDetailComponent — optimistic locking', () => {
+  it('onTransition fails with OptimisticLockError when version is stale', async () => {
+    const jobRepo = new FakeJobRepo();
+    const job = makeJob({ id: 'j1', status: JobStatus.Draft, organizationId: 'org1', ownerUserId: 'user1', version: 1 });
+    jobRepo.seed([job]);
+
+    const { component } = configure(UserRole.Employer, 'j1', jobRepo);
+    await component.loadJob();
+
+    // Component holds job with version: 1
+    expect(component.job()?.version).toBe(1);
+
+    // Externally bump the repo version to 2 (simulates concurrent write)
+    const stored = (await jobRepo.getById('j1'))!;
+    await jobRepo.put({ ...stored, version: 2 });
+
+    // Now attempt to publish — optimistic lock check fails
+    await component.onTransition('active');
+
+    expect(component.actionError()).toBeTruthy();
+    expect(component.actionError()).toContain('modified');
+    expect(component.actionSuccess()).toBeNull();
+  });
+
+  it('onClose fails with OptimisticLockError when version is stale', async () => {
+    const jobRepo = new FakeJobRepo();
+    const job = makeJob({ id: 'j2', status: JobStatus.Active, organizationId: 'org1', ownerUserId: 'user1', version: 2 });
+    jobRepo.seed([job]);
+
+    const { component } = configure(UserRole.Employer, 'j2', jobRepo);
+    await component.loadJob();
+
+    // Bump version externally
+    await jobRepo.put({ ...job, version: 5 });
+
+    await component.onTransition('closed');
+
+    expect(component.actionError()).toBeTruthy();
   });
 });

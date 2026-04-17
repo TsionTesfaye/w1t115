@@ -7,6 +7,7 @@ import { SessionService } from '../../../../core/services/session.service';
 import { ApplicationService } from '../../../../core/services/application.service';
 import { UserRole, ApplicationStage, ApplicationStatus } from '../../../../core/enums';
 import { Application } from '../../../../core/models';
+import { OptimisticLockError } from '../../../../core/errors';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -200,5 +201,27 @@ describe('ApplicationDetailComponent', () => {
   it('isManagement is false for Candidate role', async () => {
     const { component } = configure(UserRole.Candidate, 'app1');
     expect(component.isManagement()).toBe(false);
+  });
+
+  it('onSubmit fails with OptimisticLockError when version is stale', async () => {
+    // Seed draftApp with version 1, load it, then externally bump version to 2 in the stub,
+    // simulating a concurrent write; onSubmit should surface the lock conflict.
+    const lockError = new OptimisticLockError('Application', 'app1');
+    const { component } = configure(UserRole.Candidate, 'app1', {
+      getApplication: vi.fn().mockResolvedValue(draftApp),
+      // Simulate: by the time transitionStage is called, repo version has moved
+      transitionStage: vi.fn().mockRejectedValue(lockError),
+    });
+
+    await component.loadApplication();
+    expect(component.app()?.version).toBe(1);
+
+    await component.onSubmit();
+
+    // Component actionError signal should reflect the lock conflict
+    expect(component.actionError()).toBeTruthy();
+    const errMsg = component.actionError() ?? '';
+    const containsConflict = errMsg.toLowerCase().includes('conflict') || errMsg.includes('modified') || errMsg.includes('OptimisticLock');
+    expect(containsConflict).toBe(true);
   });
 });

@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { OptimisticLockError } from '../../../../core/errors';
 import { TestBed } from '@angular/core/testing';
 import { signal, computed } from '@angular/core';
 import { ActivatedRoute, Router } from '@angular/router';
@@ -238,5 +239,60 @@ describe('InterviewDetailComponent', () => {
   it('isManagement is false for Interviewer role', async () => {
     const { component } = configure(UserRole.Interviewer, 'int1');
     expect(component.isManagement()).toBe(false);
+  });
+});
+
+// ── Optimistic-lock tests ─────────────────────────────────────────────────────
+
+describe('InterviewDetailComponent — optimistic locking', () => {
+  it('onComplete fails with OptimisticLockError when version is stale', async () => {
+    // Seed scheduledInterview (version 1), load it, simulate external version bump,
+    // then call onComplete — expect actionError to contain lock conflict message.
+    const lockError = new OptimisticLockError('Interview', 'int1');
+    const { component } = configure(
+      UserRole.Interviewer, 'int1',
+      {
+        getByInterviewer: vi.fn().mockResolvedValue([scheduledInterview]),
+        // By the time completeInterview is called, repo version has moved to 2
+        completeInterview: vi.fn().mockRejectedValue(lockError),
+      },
+    );
+
+    await component.loadInterview();
+    expect(component.interview()?.version).toBe(1);
+
+    await component.onComplete();
+
+    expect(component.actionError()).toBeTruthy();
+    const errMsg = component.actionError() ?? '';
+    const containsConflict =
+      errMsg.toLowerCase().includes('conflict') ||
+      errMsg.includes('modified') ||
+      errMsg.includes('OptimisticLock');
+    expect(containsConflict).toBe(true);
+  });
+
+  it('onCancel fails with OptimisticLockError when version is stale', async () => {
+    const lockError = new OptimisticLockError('Interview', 'int1');
+    const { component } = configure(
+      UserRole.HRCoordinator, 'int1',
+      {
+        listByOrganization: vi.fn().mockResolvedValue([scheduledInterview]),
+        cancelInterview: vi.fn().mockRejectedValue(lockError),
+      },
+    );
+
+    await component.loadInterview();
+    expect(component.interview()?.version).toBe(1);
+
+    await component.onCancel();
+
+    expect(component.actionError()).toBeTruthy();
+    const errMsg = component.actionError() ?? '';
+    const containsConflict =
+      errMsg.toLowerCase().includes('conflict') ||
+      errMsg.includes('modified') ||
+      errMsg.includes('OptimisticLock');
+    expect(containsConflict).toBe(true);
   });
 });
