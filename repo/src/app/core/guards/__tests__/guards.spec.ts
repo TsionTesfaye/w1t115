@@ -8,6 +8,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router, ActivatedRouteSnapshot, RouterStateSnapshot, UrlTree } from '@angular/router';
+import { routes } from '../../../app.routes';
 import { signal, computed } from '@angular/core';
 import { authGuard } from '../auth.guard';
 import { roleGuard } from '../role.guard';
@@ -195,6 +196,49 @@ describe('roleGuard — session rejection paths', () => {
       const result = TestBed.runInInjectionContext(() => roleGuard(route, fakeState));
       expect(result).toBe(true);
       TestBed.resetTestingModule();
+    }
+  });
+});
+
+// ── Route fallback configuration ──────────────────────────────────────────────
+
+describe('route fallback configuration', () => {
+  it("empty path '' redirects to 'dashboard' with pathMatch 'full'", () => {
+    const emptyRoute = routes.find(r => r.path === '');
+    expect(emptyRoute).toBeDefined();
+    expect(emptyRoute!.redirectTo).toBe('dashboard');
+    expect(emptyRoute!.pathMatch).toBe('full');
+  });
+
+  it("wildcard path '**' redirects to 'dashboard'", () => {
+    const wildcardRoute = routes.find(r => r.path === '**');
+    expect(wildcardRoute).toBeDefined();
+    expect(wildcardRoute!.redirectTo).toBe('dashboard');
+  });
+
+  it("'**' route is declared after '' so it acts as a catch-all", () => {
+    const emptyIdx    = routes.findIndex(r => r.path === '');
+    const wildcardIdx = routes.findIndex(r => r.path === '**');
+    expect(emptyIdx).toBeGreaterThanOrEqual(0);
+    expect(wildcardIdx).toBeGreaterThan(emptyIdx);
+  });
+
+  it("public routes 'login' and 'setup' have no canActivate guards", () => {
+    const loginRoute = routes.find(r => r.path === 'login');
+    const setupRoute = routes.find(r => r.path === 'setup');
+    expect(loginRoute?.canActivate).toBeUndefined();
+    expect(setupRoute?.canActivate).toBeUndefined();
+  });
+
+  it("every authenticated route declares both authGuard and roleGuard", () => {
+    const protectedPaths = [
+      'dashboard', 'jobs', 'applications', 'interviews',
+      'admin', 'documents', 'notifications',
+    ];
+    for (const path of protectedPaths) {
+      const route = routes.find(r => r.path === path);
+      expect(route, `route '${path}' not found`).toBeDefined();
+      expect(route!.canActivate?.length, `route '${path}' missing guards`).toBeGreaterThanOrEqual(2);
     }
   });
 });
