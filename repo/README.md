@@ -18,9 +18,9 @@ docker-compose up
 
 **What happens inside the container:**
 
-1. `npm install` — installs dependencies (layer-cached after the first build).
+1. Dependencies are pre-installed during the Docker image build (layer-cached; no runtime install step).
 2. `./run_tests.sh` — runs the full Vitest suite; the container stops immediately on any failure.
-3. `npm run dev` — starts the Angular dev server on all interfaces.
+3. The Angular dev server starts on all interfaces.
 
 **Access:** <http://localhost:4200>
 
