@@ -107,6 +107,30 @@ import { LoadingStateComponent, ErrorStateComponent, EmptyStateComponent } from 
       }
 
       @if (activeTab() === 'queue') {
+        <div class="form-panel">
+          <h2>Enqueue Webhook</h2>
+          <form [formGroup]="enqueueForm" (ngSubmit)="onEnqueueWebhook()">
+            <div class="form-row">
+              <div class="field field-lg">
+                <label for="targetName">Target Name *</label>
+                <input id="targetName" formControlName="targetName" placeholder="e.g. crm-hook">
+              </div>
+              <div class="field field-lg">
+                <label for="payload">Payload (JSON) *</label>
+                <input id="payload" formControlName="payload" placeholder='{"event":"test"}'>
+              </div>
+              <div class="form-actions" style="align-items:flex-end; padding-bottom:1rem; gap:0.5rem;">
+                <button type="submit" class="btn-primary" [disabled]="enqueueForm.invalid || isEnqueuing()">
+                  {{ isEnqueuing() ? 'Enqueuing...' : 'Enqueue' }}
+                </button>
+                <button type="button" class="btn-secondary" (click)="onProcessRetries()" [disabled]="isProcessingRetries()">
+                  {{ isProcessingRetries() ? 'Processing...' : 'Process Retries' }}
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+
         @if (isLoading()) {
           <app-loading-state message="Loading webhook queue..." />
         } @else if (error()) {
@@ -267,6 +291,11 @@ import { LoadingStateComponent, ErrorStateComponent, EmptyStateComponent } from 
     .status-badge[data-status="deactivated"] { background: #f0f0f0; color: #888; }
     .actions-cell { display: flex; gap: 0.4rem; }
     .btn-sm { padding: 0.25rem 0.65rem; font-size: 0.8rem; border-radius: 4px; cursor: pointer; border: none; }
+    .btn-secondary {
+      padding: 0.5rem 1.25rem; background: white; color: #333;
+      border: 1px solid #ddd; border-radius: 4px; cursor: pointer; font-size: 0.9rem;
+    }
+    .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn-sm.btn-secondary { background: white; color: #333; border: 1px solid #ddd; }
     .btn-sm.btn-danger { background: #cc0000; color: white; }
     .btn-sm:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -280,6 +309,8 @@ export class IntegrationConsoleComponent implements OnInit {
   activeTab = signal<string>('console');
   isLoading = signal(false);
   isSending = signal(false);
+  isEnqueuing = signal(false);
+  isProcessingRetries = signal(false);
   error = signal<string | null>(null);
   actionError = signal<string | null>(null);
   actionSuccess = signal<string | null>(null);
@@ -304,6 +335,11 @@ export class IntegrationConsoleComponent implements OnInit {
 
   secretForm: FormGroup = this.fb.group({
     integrationKey: ['', Validators.required],
+  });
+
+  enqueueForm: FormGroup = this.fb.group({
+    targetName: ['', Validators.required],
+    payload: ['', Validators.required],
   });
 
   isAdmin(): boolean {
@@ -390,6 +426,42 @@ export class IntegrationConsoleComponent implements OnInit {
       this.autoClearMessages();
     } finally {
       this.isSecretLoading.set(false);
+    }
+  }
+
+  async onEnqueueWebhook(): Promise<void> {
+    if (this.enqueueForm.invalid) return;
+    this.isEnqueuing.set(true);
+    this.clearMessages();
+    try {
+      const ctx = this.session.requireAuth();
+      const { targetName, payload } = this.enqueueForm.value;
+      await this.integrationSvc.enqueueWebhook(targetName.trim(), payload.trim(), ctx.organizationId);
+      this.enqueueForm.reset();
+      this.actionSuccess.set('Webhook enqueued successfully');
+      this.autoClearMessages();
+      await this.loadWebhookQueue();
+    } catch (e: any) {
+      this.actionError.set(e.message ?? 'Failed to enqueue webhook');
+      this.autoClearMessages();
+    } finally {
+      this.isEnqueuing.set(false);
+    }
+  }
+
+  async onProcessRetries(): Promise<void> {
+    this.isProcessingRetries.set(true);
+    this.clearMessages();
+    try {
+      await this.integrationSvc.processWebhookRetries();
+      this.actionSuccess.set('Retry pass complete');
+      this.autoClearMessages();
+      await this.loadWebhookQueue();
+    } catch (e: any) {
+      this.actionError.set(e.message ?? 'Failed to process retries');
+      this.autoClearMessages();
+    } finally {
+      this.isProcessingRetries.set(false);
     }
   }
 

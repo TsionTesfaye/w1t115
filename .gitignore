@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Claude Code project memory and working files
+.claude/
+files/
+
+# Delivery/review docs generated during development
+delivery-*.md
+final-*.md
+*-architecture-review*.md
+*-acceptance-report*.md
+
+# Sessions (large JSON runtime state)
+sessions/

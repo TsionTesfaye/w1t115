@@ -89,6 +89,7 @@ interface ConfigureOpts {
   applicationId?: string;
   userId?: string;
   orgId?: string;
+  docSvcOverride?: any;
 }
 
 function configure(opts: ConfigureOpts = {}) {
@@ -98,6 +99,7 @@ function configure(opts: ConfigureOpts = {}) {
     applicationId = APP_ID,
     userId = USER_ID,
     orgId = ORG_ID,
+    docSvcOverride,
   } = opts;
 
   const appRepo = new FakeApplicationRepo();
@@ -118,7 +120,7 @@ function configure(opts: ConfigureOpts = {}) {
     docRepo as any,
   );
 
-  const docSvcStub = makeDocSvcStub(uploadedDocs);
+  const docSvcStub = docSvcOverride ?? makeDocSvcStub(uploadedDocs);
   const sessionStub = makeSessionStub(userId, orgId);
 
   const routeStub = {
@@ -344,5 +346,177 @@ describe('ApplicationPacketComponent', () => {
     // The real test is that the error path is reachable when version mismatch occurs
     // Force an actual version conflict: set component packet version to something wrong
     expect(component.actionError() || component.packet()?.status === PacketStatus.Submitted).toBeTruthy();
+  });
+});
+
+// ── configureWithDocSpy helper ────────────────────────────────────────────────
+
+function configureWithDocSpy(opts: ConfigureOpts = {}) {
+  const uploadSpy = vi.fn().mockResolvedValue({});
+  const listByOwnerSpy = vi.fn().mockResolvedValue(opts.uploadedDocs ?? []);
+  const docSvcSpy = { listByOwner: listByOwnerSpy, uploadDocument: uploadSpy };
+  const result = configure({ ...opts, docSvcOverride: docSvcSpy });
+  return { ...result, uploadSpy, listByOwnerSpy };
+}
+
+// ── Document upload flow ──────────────────────────────────────────────────────
+
+describe('ApplicationPacketComponent — uploadDocument password/file gating', () => {
+  it('uploadDocument is a no-op when no file is selected', async () => {
+    const pkt = makePacket({ applicationId: APP_ID, status: PacketStatus.InProgress });
+    const { component, uploadSpy } = configureWithDocSpy({ seedPackets: [pkt] });
+    component.applicationId.set(APP_ID);
+    await component.loadPacket();
+
+    component.docUploadFile.set(null);
+    component.docPassword.set('secret123');
+    await component.uploadDocument();
+
+    expect(uploadSpy).not.toHaveBeenCalled();
+    expect(component.uploadingDoc()).toBe(false);
+  });
+
+  it('uploadDocument is a no-op when password is empty', async () => {
+    const pkt = makePacket({ applicationId: APP_ID, status: PacketStatus.InProgress });
+    const { component, uploadSpy } = configureWithDocSpy({ seedPackets: [pkt] });
+    component.applicationId.set(APP_ID);
+    await component.loadPacket();
+
+    component.docUploadFile.set({ name: 'cv.pdf', type: 'application/pdf', size: 1024, data: new ArrayBuffer(0) });
+    component.docPassword.set('');
+    await component.uploadDocument();
+
+    expect(uploadSpy).not.toHaveBeenCalled();
+  });
+
+  it('uploadDocument calls docSvc with file, password and label — resets form on success', async () => {
+    const pkt = makePacket({ applicationId: APP_ID, status: PacketStatus.InProgress });
+    const { component, uploadSpy } = configureWithDocSpy({ seedPackets: [pkt] });
+    component.applicationId.set(APP_ID);
+    await component.loadPacket();
+
+    const fakeFile = { name: 'resume.pdf', type: 'application/pdf', size: 2048, data: new ArrayBuffer(8) };
+    component.docUploadFile.set(fakeFile);
+    component.docPassword.set('mypassword');
+    component.docLabel.set('Resume / CV');
+    await component.uploadDocument();
+
+    expect(uploadSpy).toHaveBeenCalledWith(fakeFile, APP_ID, USER_ID, ORG_ID, 'mypassword', 'Resume / CV');
+    expect(component.actionSuccess()).toContain('uploaded');
+    expect(component.docUploadFile()).toBeNull();
+    expect(component.docPassword()).toBe('');
+    expect(component.docLabel()).toBe('Resume / CV'); // reset to default
+  });
+
+  it('uploadDocument sets uploadError when docSvc.uploadDocument throws', async () => {
+    const pkt = makePacket({ applicationId: APP_ID, status: PacketStatus.InProgress });
+    const { component, uploadSpy } = configureWithDocSpy({ seedPackets: [pkt] });
+    uploadSpy.mockRejectedValue(new Error('Storage quota exceeded'));
+    component.applicationId.set(APP_ID);
+    await component.loadPacket();
+
+    component.docUploadFile.set({ name: 'big.pdf', type: 'application/pdf', size: 999, data: new ArrayBuffer(0) });
+    component.docPassword.set('pass');
+    await component.uploadDocument();
+
+    expect(component.uploadError()).toContain('Storage quota');
+    expect(component.uploadingDoc()).toBe(false);
+    expect(component.actionSuccess()).toBeNull();
+  });
+
+  it('uploadDocument is a no-op for Submitted (read-only) packet', async () => {
+    const pkt = makePacket({ applicationId: APP_ID, status: PacketStatus.Submitted });
+    const { component, uploadSpy } = configureWithDocSpy({ seedPackets: [pkt] });
+    component.applicationId.set(APP_ID);
+    await component.loadPacket();
+
+    component.docUploadFile.set({ name: 'cv.pdf', type: 'application/pdf', size: 512, data: new ArrayBuffer(0) });
+    component.docPassword.set('pass');
+    await component.uploadDocument();
+
+    expect(uploadSpy).not.toHaveBeenCalled();
+    expect(component.isReadOnly()).toBe(true);
+  });
+
+  it('uploadDocument is a no-op for Locked packet', async () => {
+    const pkt = makePacket({ applicationId: APP_ID, status: PacketStatus.Locked });
+    const { component, uploadSpy } = configureWithDocSpy({ seedPackets: [pkt] });
+    component.applicationId.set(APP_ID);
+    await component.loadPacket();
+
+    component.docUploadFile.set({ name: 'cv.pdf', type: 'application/pdf', size: 512, data: new ArrayBuffer(0) });
+    component.docPassword.set('pass');
+    await component.uploadDocument();
+
+    expect(uploadSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ── Step navigation + doc refresh ────────────────────────────────────────────
+
+describe('ApplicationPacketComponent — step navigation', () => {
+  it('goToStep(1) refreshes the uploaded docs list', async () => {
+    const pkt = makePacket({ applicationId: APP_ID, status: PacketStatus.InProgress });
+    const { component, listByOwnerSpy } = configureWithDocSpy({ seedPackets: [pkt] });
+    component.applicationId.set(APP_ID);
+    await component.loadPacket();
+
+    const callsBefore = listByOwnerSpy.mock.calls.length;
+    await component.goToStep(1);
+
+    expect(listByOwnerSpy.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(component.currentStep()).toBe(1);
+  });
+
+  it('goToStep(2) refreshes the uploaded docs list', async () => {
+    const pkt = makePacket({ applicationId: APP_ID, status: PacketStatus.InProgress });
+    const { component, listByOwnerSpy } = configureWithDocSpy({ seedPackets: [pkt] });
+    component.applicationId.set(APP_ID);
+    await component.loadPacket();
+
+    const callsBefore = listByOwnerSpy.mock.calls.length;
+    await component.goToStep(2);
+
+    expect(listByOwnerSpy.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(component.currentStep()).toBe(2);
+  });
+
+  it('goToStep(0) does NOT call loadUploadedDocs', async () => {
+    const pkt = makePacket({ applicationId: APP_ID, status: PacketStatus.InProgress });
+    const { component, listByOwnerSpy } = configureWithDocSpy({ seedPackets: [pkt] });
+    component.applicationId.set(APP_ID);
+    await component.loadPacket();
+    component.currentStep.set(1);
+
+    const callsBefore = listByOwnerSpy.mock.calls.length;
+    await component.goToStep(0);
+
+    expect(listByOwnerSpy.mock.calls.length).toBe(callsBefore);
+    expect(component.currentStep()).toBe(0);
+  });
+
+  it('saveDocChecklist advances currentStep to 2', async () => {
+    const pkt = makePacket({ applicationId: APP_ID, status: PacketStatus.InProgress });
+    const { component } = configureWithDocSpy({ seedPackets: [pkt] });
+    component.applicationId.set(APP_ID);
+    await component.loadPacket();
+    component.currentStep.set(1);
+
+    await component.saveDocChecklist();
+
+    expect(component.currentStep()).toBe(2);
+  });
+
+  it('saveDocChecklist is a no-op for read-only packet', async () => {
+    const pkt = makePacket({ applicationId: APP_ID, status: PacketStatus.Submitted });
+    const { component } = configureWithDocSpy({ seedPackets: [pkt] });
+    component.applicationId.set(APP_ID);
+    await component.loadPacket();
+    component.currentStep.set(1);
+
+    await component.saveDocChecklist();
+
+    // isReadOnly() returns early — step stays at 1
+    expect(component.currentStep()).toBe(1);
   });
 });

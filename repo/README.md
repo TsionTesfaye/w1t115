@@ -87,7 +87,7 @@ Step-by-step walkthrough to confirm the app is working after `docker-compose up`
 ```bash
 docker-compose run --rm app ./run_tests.sh
 ```
-**Expected:** `Test Files  57 passed (57)` · `Tests  799 passed (799)`.
+**Expected:** `Test Files  58 passed (58)` · `Tests  845 passed (845)`.
 
 ---
 
@@ -208,7 +208,7 @@ docker-compose run --rm app ./run_tests.sh
 docker-compose run --rm app ./run_tests.sh --coverage
 ```
 
-**Current coverage: 657 tests across 51 files — all passing.**
+**Current coverage: 845 tests across 58 files — all passing.**
 
 ### Suite breakdown
 

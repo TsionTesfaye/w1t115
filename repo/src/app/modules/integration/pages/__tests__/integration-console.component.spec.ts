@@ -56,6 +56,7 @@ function stubFetch(status: number, body: string, headers: Record<string, string>
   const mockHeaders = new Map(Object.entries({ 'content-type': 'application/json', ...headers }));
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
     status,
+    ok: status >= 200 && status < 300,
     text: async () => body,
     headers: { forEach: (cb: (v: string, k: string) => void) => mockHeaders.forEach(cb) },
   }));
@@ -194,5 +195,93 @@ describe('IntegrationConsoleComponent', () => {
 
     // If headers were parsed incorrectly, fetch would fail
     expect(component.response()?.status).toBe(200);
+  });
+});
+
+// ── Webhook queue creation and retry flow ─────────────────────────────────────
+
+describe('IntegrationConsoleComponent — webhook enqueue and retry', () => {
+  it('onEnqueueWebhook creates a new item in the repo and refreshes the queue', async () => {
+    const { component, webhookRepo } = configure();
+    await component.switchToQueue();
+
+    expect(component.webhookQueue()).toHaveLength(0);
+
+    component.enqueueForm.setValue({ targetName: 'crm-hook', payload: '{"event":"test"}' });
+    await component.onEnqueueWebhook();
+
+    expect(webhookRepo.snapshot()).toHaveLength(1);
+    expect(webhookRepo.snapshot()[0].targetName).toBe('crm-hook');
+    expect(webhookRepo.snapshot()[0].status).toBe(WebhookQueueStatus.Pending);
+    expect(webhookRepo.snapshot()[0].retryCount).toBe(0);
+
+    expect(component.webhookQueue()).toHaveLength(1);
+    expect(component.actionSuccess()).toContain('enqueued');
+    expect(component.enqueueForm.value.targetName).toBeFalsy();
+  });
+
+  it('onEnqueueWebhook does nothing when form is invalid', async () => {
+    const { component, webhookRepo } = configure();
+
+    component.enqueueForm.setValue({ targetName: '', payload: '' });
+    await component.onEnqueueWebhook();
+
+    expect(webhookRepo.snapshot()).toHaveLength(0);
+  });
+
+  it('onProcessRetries delivers pending items — transitions Pending→Delivered on fetch 200', async () => {
+    stubFetch(200, 'OK');
+    const { component, webhookRepo } = configure();
+
+    component.enqueueForm.setValue({ targetName: 'target', payload: '{"x":1}' });
+    await component.onEnqueueWebhook();
+
+    expect(webhookRepo.snapshot()[0].status).toBe(WebhookQueueStatus.Pending);
+
+    await component.onProcessRetries();
+
+    const updated = webhookRepo.snapshot()[0];
+    expect(updated.status).toBe(WebhookQueueStatus.Delivered);
+    expect(component.actionSuccess()).toContain('complete');
+
+    expect(component.webhookQueue()[0].status).toBe(WebhookQueueStatus.Delivered);
+  });
+
+  it('onProcessRetries transitions Pending→Pending (retry scheduled) on fetch failure', async () => {
+    const { component, webhookRepo } = configure();
+    component.enqueueForm.setValue({ targetName: 'target', payload: '{"x":1}' });
+    await component.onEnqueueWebhook();
+
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network error')));
+
+    await component.onProcessRetries();
+
+    const updated = webhookRepo.snapshot()[0];
+    expect(updated.retryCount).toBe(1);
+    expect([WebhookQueueStatus.Pending, 'failed']).toContain(updated.status);
+  });
+
+  it('queue shows new item immediately after enqueue without manual refresh', async () => {
+    const { component } = configure();
+    await component.switchToQueue();
+
+    component.enqueueForm.setValue({ targetName: 'instant-hook', payload: '{"ping":true}' });
+    await component.onEnqueueWebhook();
+
+    expect(component.webhookQueue().some(i => i.targetName === 'instant-hook')).toBe(true);
+  });
+
+  it('multiple enqueues accumulate in queue', async () => {
+    const { component, webhookRepo } = configure();
+    await component.switchToQueue();
+
+    component.enqueueForm.setValue({ targetName: 'hook-1', payload: '{"a":1}' });
+    await component.onEnqueueWebhook();
+
+    component.enqueueForm.setValue({ targetName: 'hook-2', payload: '{"b":2}' });
+    await component.onEnqueueWebhook();
+
+    expect(webhookRepo.snapshot()).toHaveLength(2);
+    expect(component.webhookQueue()).toHaveLength(2);
   });
 });

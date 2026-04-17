@@ -8,7 +8,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { signal, computed } from '@angular/core';
-import { provideRouter } from '@angular/router';
+import { provideRouter, Router } from '@angular/router';
 import { ApplicationListComponent } from '../application-list.component';
 import { SessionService } from '../../../../core/services/session.service';
 import { ApplicationService } from '../../../../core/services/application.service';
@@ -239,6 +239,63 @@ describe('ApplicationListComponent — real ApplicationService', () => {
     await component.loadApps();
     expect(component.apps()).toHaveLength(0);
     expect(component.isLoading()).toBe(false);
+  });
+});
+
+// ── Packet / detail navigation ────────────────────────────────────────────────
+
+describe('ApplicationListComponent — candidate packet flow navigation', () => {
+  it('goToDetail navigates to /applications/:id', async () => {
+    const appRepo = new FakeApplicationRepo();
+    const app = makeApplication({ id: 'a1', candidateId: 'user1', organizationId: 'org1', status: ApplicationStatus.Active });
+    appRepo.seed([app]);
+
+    const { component } = configure(UserRole.Candidate, appRepo);
+    await component.loadApps();
+
+    const router = TestBed.inject(Router);
+    const spy = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+
+    component.goToDetail(app);
+
+    expect(spy).toHaveBeenCalledWith(['/applications', 'a1']);
+  });
+
+  it('goToPacket navigates to /application-packet/:id', async () => {
+    const appRepo = new FakeApplicationRepo();
+    const app = makeApplication({ id: 'a1', candidateId: 'user1', organizationId: 'org1', status: ApplicationStatus.Active });
+    appRepo.seed([app]);
+
+    const { component } = configure(UserRole.Candidate, appRepo);
+    await component.loadApps();
+
+    const router = TestBed.inject(Router);
+    const spy = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+
+    component.goToPacket(app);
+
+    expect(spy).toHaveBeenCalledWith(['/application-packet', 'a1']);
+  });
+
+  it('candidate with active application exposes goToPacket on every active app', async () => {
+    const appRepo = new FakeApplicationRepo();
+    appRepo.seed([
+      makeApplication({ id: 'a1', candidateId: 'user1', organizationId: 'org1', status: ApplicationStatus.Active, stage: ApplicationStage.Draft }),
+      makeApplication({ id: 'a2', candidateId: 'user1', organizationId: 'org1', status: ApplicationStatus.Active, stage: ApplicationStage.Submitted }),
+      makeApplication({ id: 'a3', candidateId: 'user1', organizationId: 'org1', status: ApplicationStatus.Withdrawn, stage: ApplicationStage.Submitted }),
+    ]);
+
+    const { component } = configure(UserRole.Candidate, appRepo);
+    await component.loadApps();
+
+    const router = TestBed.inject(Router);
+    const spy = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+
+    component.goToPacket(component.apps()[0]);
+    expect(spy).toHaveBeenLastCalledWith(['/application-packet', 'a1']);
+
+    component.goToPacket(component.apps()[1]);
+    expect(spy).toHaveBeenLastCalledWith(['/application-packet', 'a2']);
   });
 });
 

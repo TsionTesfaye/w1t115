@@ -1,5 +1,6 @@
 import { Component, inject, signal, computed, OnInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { Router } from '@angular/router';
 import { SessionService } from '../../../core/services/session.service';
 import { ApplicationService } from '../../../core/services/application.service';
 import { JobService } from '../../../core/services/job.service';
@@ -60,7 +61,11 @@ import { LoadingStateComponent, ErrorStateComponent, EmptyStateComponent } from 
                 <td><span class="status-badge" [attr.data-status]="app.status">{{ app.status }}</span></td>
                 <td>{{ app.submittedAt ? (app.submittedAt | date:'short') : '-' }}</td>
                 <td class="actions">
+                  <button class="btn-sm btn-secondary" (click)="goToDetail(app)">View</button>
                   @if (isCandidate()) {
+                    @if (app.status === 'active') {
+                      <button class="btn-sm btn-packet" (click)="goToPacket(app)">Packet</button>
+                    }
                     @if (app.stage === 'draft' && app.status === 'active') {
                       <button class="btn-sm btn-primary" (click)="onSubmit(app)">Submit</button>
                       <button class="btn-sm btn-danger" (click)="onDeleteDraft(app)">Delete</button>
@@ -118,6 +123,8 @@ import { LoadingStateComponent, ErrorStateComponent, EmptyStateComponent } from 
     .actions { display: flex; gap: 0.25rem; }
     .btn-sm { padding: 0.3rem 0.75rem; font-size: 0.8rem; border-radius: 4px; cursor: pointer; border: none; }
     .btn-sm.btn-primary { background: #4040ff; color: white; }
+    .btn-sm.btn-secondary { background: white; color: #333; border: 1px solid #ddd; }
+    .btn-sm.btn-packet { background: #6060ff; color: white; }
     .btn-sm.btn-warn { background: #ff6b35; color: white; }
     .btn-sm.btn-danger { background: #cc0000; color: white; }
   `]
@@ -126,6 +133,7 @@ export class ApplicationListComponent implements OnInit {
   private readonly session = inject(SessionService);
   private readonly appSvc = inject(ApplicationService);
   private readonly jobSvc = inject(JobService);
+  private readonly router = inject(Router);
 
   apps = signal<Application[]>([]);
   jobTitleMap = signal<Map<string, string>>(new Map());
@@ -205,6 +213,14 @@ export class ApplicationListComponent implements OnInit {
       return this.stageOrder[idx + 1] as ApplicationStage;
     }
     return null;
+  }
+
+  goToDetail(app: Application): void {
+    this.router.navigate(['/applications', app.id]);
+  }
+
+  goToPacket(app: Application): void {
+    this.router.navigate(['/application-packet', app.id]);
   }
 
   async onSubmit(app: Application): Promise<void> {
