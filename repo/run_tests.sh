@@ -37,14 +37,19 @@ echo ""
 
 cd "$REPO_ROOT"
 
-# Dependencies and build are handled by Docker (Dockerfile: RUN npm install).
-# run_tests.sh is test-only — no local install or build step.
+# Ensure node_modules are present (Docker pre-installs them; CI may not).
+if [ ! -f "$REPO_ROOT/node_modules/.bin/vitest" ]; then
+  echo "--- node_modules not found, running npm install ---"
+  npm install
+fi
+
+VITEST="$REPO_ROOT/node_modules/.bin/vitest"
 
 run_suite() {
   local name="$1"
   local pattern="$2"
   echo "--- Running $name tests ---"
-  npx vitest run "$pattern"
+  "$VITEST" run "$pattern"
   echo "--- $name tests complete ---"
   echo ""
 }
@@ -65,15 +70,13 @@ case "$SUITE" in
     run_suite "E2E"     "e2e_tests"
     ;;
   all|*)
+    EXTRA_ARGS=""
+    [ "$COVERAGE" = true ] && EXTRA_ARGS="--coverage"
     if [ "$WATCH" = true ]; then
-      EXTRA_ARGS=""
-      [ "$COVERAGE" = true ] && EXTRA_ARGS="--coverage"
-      npx vitest $EXTRA_ARGS
+      "$VITEST" $EXTRA_ARGS
     else
-      EXTRA_ARGS=""
-      [ "$COVERAGE" = true ] && EXTRA_ARGS="--coverage"
       echo "--- Running all test suites (single-thread mode) ---"
-      npx vitest run $EXTRA_ARGS
+      "$VITEST" run $EXTRA_ARGS
       echo ""
       echo "--- All test suites complete ---"
     fi
