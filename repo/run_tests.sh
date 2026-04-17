@@ -37,26 +37,8 @@ echo ""
 
 cd "$REPO_ROOT"
 
-# ── Install dependencies ───────────────────────────────────────────────────────
-# node_modules are not committed; install them if absent (CI / clean checkout).
-if [ ! -d node_modules ]; then
-  echo "--- Installing dependencies ---"
-  npm install
-  echo "--- Dependencies installed ---"
-  echo ""
-fi
-
-# ── Build gate ────────────────────────────────────────────────────────────────
-echo "--- Build validation ---"
-if ! npm run build --silent 2>&1; then
-  echo ""
-  echo "======================================="
-  echo "  BUILD FAILED — tests not run"
-  echo "======================================="
-  exit 1
-fi
-echo "--- Build passed ---"
-echo ""
+# Dependencies and build are handled by Docker (Dockerfile: RUN npm install).
+# run_tests.sh is test-only — no local install or build step.
 
 run_suite() {
   local name="$1"
